@@ -69,11 +69,17 @@ jobs:
           #define DISPLAY_BACKLIGHT_OUTPUT_INVERT false
           #define DISPLAY_SPI_MODE        0
 
+          #ifndef CONFIG_WK_ESP32S3_DEV_DISPLAY_LCD
+          #define CONFIG_WK_ESP32S3_DEV_DISPLAY_LCD 1
+          #endif
+          #undef CONFIG_WK_ESP32S3_DEV_DISPLAY_OLED
+
           #endif
           EOF
 
           cat << 'EOF' > repo/main/boards/wk-esp32s3-dev/config.json
           {
+              "type": "wk-esp32s3-dev",
               "target": "esp32s3",
               "builds": [
                   {
@@ -81,7 +87,7 @@ jobs:
                       "sdkconfig_append": [
                           "CONFIG_WK_ESP32S3_DEV_DISPLAY_LCD=y",
                           "CONFIG_LCD_ST7789_240X320=y",
-                          "CONFIG_LANGUAGE_ES_ES=y",
+                          "CONFIG_BOARD_NO_MOTOR_CONTROL=y",
                           "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y"
                       ]
                   }
@@ -94,7 +100,7 @@ jobs:
         working-directory: repo
         run: |
           source "$IDF_PATH/export.sh"
-          python scripts/build.py wk-esp32s3-dev --name wk-esp32s3-dev
+          python scripts/build.py wk-esp32s3-dev --name wk-esp32s3-dev --language es-ES
 
       - name: Subir Firmware
         uses: actions/upload-artifact@v4
