@@ -15,7 +15,7 @@ jobs:
           git config --global --add safe.directory "*"
           git clone --depth 1 https://github.com/78/xiaozhi-esp32.git repo
 
-      - name: Configurar pines, tactil CST816D y carrusel de 4 pantallas
+      - name: Configurar pines, tactil CST816D y ojos vectoriales estilo EMO
         shell: bash
         run: |
           rm -f repo/main/boards/wk-esp32s3-dev/wk_board.cc
@@ -98,7 +98,8 @@ jobs:
                           "CONFIG_WK_ESP32S3_DEV_DISPLAY_LCD=y",
                           "CONFIG_LCD_ST7789_240X320=y",
                           "CONFIG_BOARD_NO_MOTOR_CONTROL=y",
-                          "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y"
+                          "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
+                          "CONFIG_OTA_URL=\"http://192.168.0.50:8000/xiaozhi/ota/\""
                       ]
                   }
               ]
@@ -133,6 +134,7 @@ jobs:
           #include <string>
           #include <cmath>
           #include <esp_timer.h>
+          #include <esp_random.h>
           #include <esp_netif.h>
           #include <esp_event.h>
           #include <lwip/ip_addr.h>
@@ -143,22 +145,219 @@ jobs:
           #define ESP_LCD_TOUCH_IO_I2C_CST816S_ADDRESS 0x15
           #endif
 
-          #define TAG "TrokoWaveshare"
+          #define TAG "BitbotDev"
 
           LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
 
           class BitbotDisplay : public SpiLcdDisplay {
           private:
-              int64_t last_tap_time_ms_ = 0;
+              struct EyeState {
+                  float w;
+                  float h;
+                  float x;
+                  float y;
+                  float radius;
+                  float top_lid_h;
+                  float bot_lid_h;
+                  uint32_t color_hex;
+              };
+
+              EyeState cur_l_{62.0f, 78.0f, 0.0f, 0.0f, 28.0f, 0.0f, 0.0f, 0x00E5FF};
+              EyeState cur_r_{62.0f, 78.0f, 0.0f, 0.0f, 28.0f, 0.0f, 0.0f, 0x00E5FF};
+              EyeState tgt_l_{62.0f, 78.0f, 0.0f, 0.0f, 28.0f, 0.0f, 0.0f, 0x00E5FF};
+              EyeState tgt_r_{62.0f, 78.0f, 0.0f, 0.0f, 28.0f, 0.0f, 0.0f, 0x00E5FF};
+
+              static constexpr int DEFAULT_LX = 45;
+              static constexpr int DEFAULT_RX = 133;
+              static constexpr int DEFAULT_EY = 96;
+
+              lv_obj_t* left_eye_ = nullptr;
+              lv_obj_t* right_eye_ = nullptr;
+              lv_obj_t* left_top_lid_ = nullptr;
+              lv_obj_t* left_bot_lid_ = nullptr;
+              lv_obj_t* right_top_lid_ = nullptr;
+              lv_obj_t* right_bot_lid_ = nullptr;
               lv_obj_t* mouth_ = nullptr;
-              lv_timer_t* lip_sync_timer_ = nullptr;
+
+              lv_timer_t* anim_timer_ = nullptr;
+              lv_timer_t* auto_timer_ = nullptr;
+
+              int64_t last_blink_ms_ = 0;
+              int next_blink_interval_ms_ = 3500;
+              bool is_blinking_ = false;
+              int64_t blink_start_ms_ = 0;
+
+              int64_t last_glance_ms_ = 0;
+              int next_glance_interval_ms_ = 4500;
+
+              std::string current_emotion_ = "neutral";
               int mouth_state_ = 0;
+              int64_t last_tap_time_ms_ = 0;
+
+              void ApplyEmotionInternal(const std::string& emo) {
+                  if (emo == "happy" || emo == "laughing" || emo == "funny" || emo == "joy") {
+                      tgt_l_ = {64.0f, 62.0f, 0.0f, 4.0f, 26.0f, 0.0f, 24.0f, 0x00F5D4};
+                      tgt_r_ = {64.0f, 62.0f, 0.0f, 4.0f, 26.0f, 0.0f, 24.0f, 0x00F5D4};
+                  } else if (emo == "sad" || emo == "crying") {
+                      tgt_l_ = {58.0f, 66.0f, 0.0f, 10.0f, 24.0f, 20.0f, 0.0f, 0x3A86FF};
+                      tgt_r_ = {58.0f, 66.0f, 0.0f, 10.0f, 24.0f, 20.0f, 0.0f, 0x3A86FF};
+                  } else if (emo == "angry") {
+                      tgt_l_ = {64.0f, 68.0f, 4.0f, 0.0f, 20.0f, 26.0f, 0.0f, 0xFF2A55};
+                      tgt_r_ = {64.0f, 68.0f, -4.0f, 0.0f, 20.0f, 26.0f, 0.0f, 0xFF2A55};
+                  } else if (emo == "shocked" || emo == "surprised") {
+                      tgt_l_ = {70.0f, 92.0f, 0.0f, -4.0f, 34.0f, 0.0f, 0.0f, 0xFFFFFF};
+                      tgt_r_ = {70.0f, 92.0f, 0.0f, -4.0f, 34.0f, 0.0f, 0.0f, 0xFFFFFF};
+                  } else if (emo == "thinking" || emo == "confused") {
+                      tgt_l_ = {64.0f, 82.0f, 14.0f, -8.0f, 28.0f, 0.0f, 0.0f, 0xFFD124};
+                      tgt_r_ = {56.0f, 60.0f, 14.0f, 4.0f, 22.0f, 12.0f, 0.0f, 0xFFD124};
+                  } else if (emo == "sleepy" || emo == "relaxed") {
+                      tgt_l_ = {60.0f, 32.0f, 0.0f, 8.0f, 16.0f, 8.0f, 0.0f, 0x4361EE};
+                      tgt_r_ = {60.0f, 32.0f, 0.0f, 8.0f, 16.0f, 8.0f, 0.0f, 0x4361EE};
+                  } else if (emo == "winking") {
+                      tgt_l_ = {62.0f, 5.0f, 0.0f, 12.0f, 2.0f, 0.0f, 0.0f, 0x00E5FF};
+                      tgt_r_ = {64.0f, 60.0f, 0.0f, 4.0f, 26.0f, 0.0f, 22.0f, 0x00E5FF};
+                  } else if (emo == "loving" || emo == "kissy") {
+                      tgt_l_ = {64.0f, 68.0f, 0.0f, 0.0f, 30.0f, 0.0f, 16.0f, 0xFF43A4};
+                      tgt_r_ = {64.0f, 68.0f, 0.0f, 0.0f, 30.0f, 0.0f, 16.0f, 0xFF43A4};
+                  } else {
+                      tgt_l_ = {62.0f, 78.0f, 0.0f, 0.0f, 28.0f, 0.0f, 0.0f, 0x00E5FF};
+                      tgt_r_ = {62.0f, 78.0f, 0.0f, 0.0f, 28.0f, 0.0f, 0.0f, 0x00E5FF};
+                  }
+              }
+
+              static void OnAnimTimer(lv_timer_t* t) {
+                  auto self = static_cast<BitbotDisplay*>(lv_timer_get_user_data(t));
+                  const float k = 0.25f;
+
+                  self->cur_l_.w += (self->tgt_l_.w - self->cur_l_.w) * k;
+                  self->cur_l_.h += (self->tgt_l_.h - self->cur_l_.h) * k;
+                  self->cur_l_.x += (self->tgt_l_.x - self->cur_l_.x) * k;
+                  self->cur_l_.y += (self->tgt_l_.y - self->cur_l_.y) * k;
+                  self->cur_l_.radius += (self->tgt_l_.radius - self->cur_l_.radius) * k;
+                  self->cur_l_.top_lid_h += (self->tgt_l_.top_lid_h - self->cur_l_.top_lid_h) * k;
+                  self->cur_l_.bot_lid_h += (self->tgt_l_.bot_lid_h - self->cur_l_.bot_lid_h) * k;
+
+                  self->cur_r_.w += (self->tgt_r_.w - self->cur_r_.w) * k;
+                  self->cur_r_.h += (self->tgt_r_.h - self->cur_r_.h) * k;
+                  self->cur_r_.x += (self->tgt_r_.x - self->cur_r_.x) * k;
+                  self->cur_r_.y += (self->tgt_r_.y - self->cur_r_.y) * k;
+                  self->cur_r_.radius += (self->tgt_r_.radius - self->cur_r_.radius) * k;
+                  self->cur_r_.top_lid_h += (self->tgt_r_.top_lid_h - self->cur_r_.top_lid_h) * k;
+                  self->cur_r_.bot_lid_h += (self->tgt_r_.bot_lid_h - self->cur_r_.bot_lid_h) * k;
+
+                  if (self->left_eye_) {
+                      int lx = (int)(DEFAULT_LX + self->cur_l_.x - (self->cur_l_.w - 62.0f) * 0.5f);
+                      int ly = (int)(DEFAULT_EY + self->cur_l_.y - (self->cur_l_.h - 78.0f) * 0.5f);
+                      lv_obj_set_pos(self->left_eye_, lx, ly);
+                      lv_obj_set_size(self->left_eye_, (int)self->cur_l_.w, (int)self->cur_l_.h);
+                      lv_obj_set_style_radius(self->left_eye_, (int)self->cur_l_.radius, 0);
+                      lv_obj_set_style_bg_color(self->left_eye_, lv_color_hex(self->tgt_l_.color_hex), 0);
+                  }
+                  if (self->left_top_lid_) {
+                      lv_obj_set_size(self->left_top_lid_, (int)self->cur_l_.w + 4, (int)self->cur_l_.top_lid_h);
+                      lv_obj_align(self->left_top_lid_, LV_ALIGN_TOP_MID, 0, 0);
+                  }
+                  if (self->left_bot_lid_) {
+                      lv_obj_set_size(self->left_bot_lid_, (int)self->cur_l_.w + 4, (int)self->cur_l_.bot_lid_h);
+                      lv_obj_align(self->left_bot_lid_, LV_ALIGN_BOTTOM_MID, 0, 0);
+                  }
+
+                  if (self->right_eye_) {
+                      int rx = (int)(DEFAULT_RX + self->cur_r_.x - (self->cur_r_.w - 62.0f) * 0.5f);
+                      int ry = (int)(DEFAULT_EY + self->cur_r_.y - (self->cur_r_.h - 78.0f) * 0.5f);
+                      lv_obj_set_pos(self->right_eye_, rx, ry);
+                      lv_obj_set_size(self->right_eye_, (int)self->cur_r_.w, (int)self->cur_r_.h);
+                      lv_obj_set_style_radius(self->right_eye_, (int)self->cur_r_.radius, 0);
+                      lv_obj_set_style_bg_color(self->right_eye_, lv_color_hex(self->tgt_r_.color_hex), 0);
+                  }
+                  if (self->right_top_lid_) {
+                      lv_obj_set_size(self->right_top_lid_, (int)self->cur_r_.w + 4, (int)self->cur_r_.top_lid_h);
+                      lv_obj_align(self->right_top_lid_, LV_ALIGN_TOP_MID, 0, 0);
+                  }
+                  if (self->right_bot_lid_) {
+                      lv_obj_set_size(self->right_bot_lid_, (int)self->cur_r_.w + 4, (int)self->cur_r_.bot_lid_h);
+                      lv_obj_align(self->right_bot_lid_, LV_ALIGN_BOTTOM_MID, 0, 0);
+                  }
+              }
+
+              static void OnAutonomousTimer(lv_timer_t* t) {
+                  auto self = static_cast<BitbotDisplay*>(lv_timer_get_user_data(t));
+                  int64_t now_ms = esp_timer_get_time() / 1000;
+                  auto& app = Application::GetInstance();
+                  auto state = app.GetDeviceState();
+
+                  // 1. Natural Blinking
+                  if (!self->is_blinking_ && self->current_emotion_ != "sleepy" && self->current_emotion_ != "winking") {
+                      if (now_ms - self->last_blink_ms_ > self->next_blink_interval_ms_) {
+                          self->is_blinking_ = true;
+                          self->blink_start_ms_ = now_ms;
+                          self->tgt_l_.h = 4.0f;
+                          self->tgt_r_.h = 4.0f;
+                          self->tgt_l_.radius = 2.0f;
+                          self->tgt_r_.radius = 2.0f;
+                      }
+                  } else if (self->is_blinking_) {
+                      if (now_ms - self->blink_start_ms_ > 140) {
+                          self->is_blinking_ = false;
+                          self->last_blink_ms_ = now_ms;
+                          self->next_blink_interval_ms_ = 2800 + (esp_random() % 3000);
+                          self->ApplyEmotionInternal(self->current_emotion_);
+                      }
+                  }
+
+                  // 2. Natural Saccades (looking around)
+                  if (state == kDeviceStateIdle && !self->is_blinking_ && self->current_emotion_ == "neutral") {
+                      if (now_ms - self->last_glance_ms_ > self->next_glance_interval_ms_) {
+                          self->last_glance_ms_ = now_ms;
+                          self->next_glance_interval_ms_ = 3200 + (esp_random() % 3500);
+                          int r = esp_random() % 5;
+                          if (r == 0) {
+                              self->tgt_l_.x = -16.0f; self->tgt_r_.x = -16.0f;
+                              self->tgt_l_.y = 0.0f;   self->tgt_r_.y = 0.0f;
+                          } else if (r == 1) {
+                              self->tgt_l_.x = 16.0f;  self->tgt_r_.x = 16.0f;
+                              self->tgt_l_.y = 0.0f;   self->tgt_r_.y = 0.0f;
+                          } else if (r == 2) {
+                              self->tgt_l_.x = 0.0f;   self->tgt_r_.x = 0.0f;
+                              self->tgt_l_.y = -10.0f; self->tgt_r_.y = -10.0f;
+                          } else {
+                              self->tgt_l_.x = 0.0f;   self->tgt_r_.x = 0.0f;
+                              self->tgt_l_.y = 0.0f;   self->tgt_r_.y = 0.0f;
+                          }
+                      }
+                  }
+
+                  // 3. Mouth & Lip-sync
+                  if (self->mouth_) {
+                      if (state == kDeviceStateSpeaking) {
+                          self->mouth_state_ = (self->mouth_state_ + 1) % 4;
+                          int heights[] = {8, 22, 12, 26};
+                          int widths[]  = {48, 40, 56, 44};
+                          lv_obj_set_size(self->mouth_, widths[self->mouth_state_], heights[self->mouth_state_]);
+                          lv_obj_set_style_bg_color(self->mouth_, lv_color_hex(self->tgt_l_.color_hex), 0);
+                      } else if (state == kDeviceStateListening) {
+                          lv_obj_set_size(self->mouth_, 52, 10);
+                          lv_obj_set_style_bg_color(self->mouth_, lv_color_hex(self->tgt_l_.color_hex), 0);
+                      } else {
+                          lv_obj_set_size(self->mouth_, 44, 8);
+                          lv_obj_set_style_bg_color(self->mouth_, lv_color_hex(self->tgt_l_.color_hex), 0);
+                      }
+                  }
+              }
 
           public:
               BitbotDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
                             int width, int height, int offset_x, int offset_y,
                             bool mirror_x, bool mirror_y, bool swap_xy)
                   : SpiLcdDisplay(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy) {}
+
+              virtual bool SetEmotion(const char* emotion) override {
+                  if (!emotion) return false;
+                  DisplayLockGuard lock(this);
+                  current_emotion_ = emotion;
+                  ApplyEmotionInternal(emotion);
+                  return true;
+              }
 
               virtual void SetupUI() override {
                   SpiLcdDisplay::SetupUI();
@@ -167,28 +366,82 @@ jobs:
                   auto screen = lv_screen_active();
                   lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
 
-                  // Ocultar barras y textos superfluos para rostro puro
+                  // Ocultar por completo widgets de texto y emojis clasicos de Xiaozhi
                   if (chat_message_label_) lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
                   if (status_bar_) lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+                  if (emoji_box_) lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+                  if (emoji_image_) lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
+                  if (emoji_label_) lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
 
-                  // Acomodar los ojos en la mitad superior de la pantalla vertical 240x320
-                  if (emoji_box_) {
-                      lv_obj_set_size(emoji_box_, 240, 180);
-                      lv_obj_align(emoji_box_, LV_ALIGN_TOP_MID, 0, 10);
-                  }
-                  if (emoji_image_) {
-                      lv_obj_align(emoji_image_, LV_ALIGN_CENTER, 0, 0);
-                  }
+                  // Ojo Izquierdo Vectorial EMO
+                  left_eye_ = lv_obj_create(screen);
+                  lv_obj_clear_flag(left_eye_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_set_style_border_width(left_eye_, 0, 0);
+                  lv_obj_set_style_pad_all(left_eye_, 0, 0);
+                  lv_obj_set_style_clip_corner(left_eye_, true, 0);
+                  lv_obj_set_style_bg_color(left_eye_, lv_color_hex(0x00E5FF), 0);
+                  lv_obj_set_style_radius(left_eye_, 28, 0);
+                  lv_obj_set_size(left_eye_, 62, 78);
+                  lv_obj_set_pos(left_eye_, DEFAULT_LX, DEFAULT_EY);
 
-                  // Boca Vectorial Reactiva Estilo Stackchan en la mitad inferior
+                  left_top_lid_ = lv_obj_create(left_eye_);
+                  lv_obj_clear_flag(left_top_lid_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_set_style_border_width(left_top_lid_, 0, 0);
+                  lv_obj_set_style_pad_all(left_top_lid_, 0, 0);
+                  lv_obj_set_style_bg_color(left_top_lid_, lv_color_black(), 0);
+                  lv_obj_set_style_radius(left_top_lid_, 0, 0);
+                  lv_obj_set_size(left_top_lid_, 70, 0);
+                  lv_obj_align(left_top_lid_, LV_ALIGN_TOP_MID, 0, 0);
+
+                  left_bot_lid_ = lv_obj_create(left_eye_);
+                  lv_obj_clear_flag(left_bot_lid_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_set_style_border_width(left_bot_lid_, 0, 0);
+                  lv_obj_set_style_pad_all(left_bot_lid_, 0, 0);
+                  lv_obj_set_style_bg_color(left_bot_lid_, lv_color_black(), 0);
+                  lv_obj_set_style_radius(left_bot_lid_, 28, 0);
+                  lv_obj_set_size(left_bot_lid_, 70, 0);
+                  lv_obj_align(left_bot_lid_, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+                  // Ojo Derecho Vectorial EMO
+                  right_eye_ = lv_obj_create(screen);
+                  lv_obj_clear_flag(right_eye_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_set_style_border_width(right_eye_, 0, 0);
+                  lv_obj_set_style_pad_all(right_eye_, 0, 0);
+                  lv_obj_set_style_clip_corner(right_eye_, true, 0);
+                  lv_obj_set_style_bg_color(right_eye_, lv_color_hex(0x00E5FF), 0);
+                  lv_obj_set_style_radius(right_eye_, 28, 0);
+                  lv_obj_set_size(right_eye_, 62, 78);
+                  lv_obj_set_pos(right_eye_, DEFAULT_RX, DEFAULT_EY);
+
+                  right_top_lid_ = lv_obj_create(right_eye_);
+                  lv_obj_clear_flag(right_top_lid_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_set_style_border_width(right_top_lid_, 0, 0);
+                  lv_obj_set_style_pad_all(right_top_lid_, 0, 0);
+                  lv_obj_set_style_bg_color(right_top_lid_, lv_color_black(), 0);
+                  lv_obj_set_style_radius(right_top_lid_, 0, 0);
+                  lv_obj_set_size(right_top_lid_, 70, 0);
+                  lv_obj_align(right_top_lid_, LV_ALIGN_TOP_MID, 0, 0);
+
+                  right_bot_lid_ = lv_obj_create(right_eye_);
+                  lv_obj_clear_flag(right_bot_lid_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_set_style_border_width(right_bot_lid_, 0, 0);
+                  lv_obj_set_style_pad_all(right_bot_lid_, 0, 0);
+                  lv_obj_set_style_bg_color(right_bot_lid_, lv_color_black(), 0);
+                  lv_obj_set_style_radius(right_bot_lid_, 28, 0);
+                  lv_obj_set_size(right_bot_lid_, 70, 0);
+                  lv_obj_align(right_bot_lid_, LV_ALIGN_BOTTOM_MID, 0, 0);
+
+                  // Boca Vectorial
                   mouth_ = lv_obj_create(screen);
-                  lv_obj_set_size(mouth_, 60, 10); // Forma sutil en reposo
-                  lv_obj_align(mouth_, LV_ALIGN_BOTTOM_MID, 0, -45);
-                  lv_obj_set_style_bg_color(mouth_, lv_color_hex(0xb5ff43), 0); // Verde tierno brillante
+                  lv_obj_clear_flag(mouth_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_set_size(mouth_, 44, 8);
+                  lv_obj_align(mouth_, LV_ALIGN_BOTTOM_MID, 0, -48);
+                  lv_obj_set_style_bg_color(mouth_, lv_color_hex(0x00E5FF), 0);
                   lv_obj_set_style_border_width(mouth_, 0, 0);
+                  lv_obj_set_style_pad_all(mouth_, 0, 0);
                   lv_obj_set_style_radius(mouth_, LV_RADIUS_CIRCLE, 0);
 
-                  // Interaccion tactil: toque simple conmuta voz, doble toque guino
+                  // Interaccion tactil en pantalla completa
                   lv_obj_add_flag(screen, LV_OBJ_FLAG_CLICKABLE);
                   lv_obj_add_event_cb(screen, [](lv_event_t* e) {
                       auto self = static_cast<BitbotDisplay*>(lv_event_get_user_data(e));
@@ -206,25 +459,9 @@ jobs:
                       }
                   }, LV_EVENT_CLICKED, this);
 
-                  // Timer de animacion de Lip-Sync de la boca al hablar
-                  lip_sync_timer_ = lv_timer_create([](lv_timer_t* t) {
-                      auto self = static_cast<BitbotDisplay*>(lv_timer_get_user_data(t));
-                      auto& app = Application::GetInstance();
-                      auto state = app.GetDeviceState();
-
-                      if (!self->mouth_) return;
-
-                      if (state == kDeviceStateSpeaking) {
-                          // Lip-sync activo: modular tamano de la boca simulando habla
-                          self->mouth_state_ = (self->mouth_state_ + 1) % 4;
-                          int heights[] = {8, 22, 14, 28};
-                          int widths[]  = {50, 42, 60, 46};
-                          lv_obj_set_size(self->mouth_, widths[self->mouth_state_], heights[self->mouth_state_]);
-                      } else {
-                          // En reposo o escucha: boquita sonriente normal
-                          lv_obj_set_size(self->mouth_, 50, 8);
-                      }
-                  }, 90, this);
+                  // Iniciar motores de animacion fluida a 33 FPS y comportamientos
+                  anim_timer_ = lv_timer_create(OnAnimTimer, 30, this);
+                  auto_timer_ = lv_timer_create(OnAutonomousTimer, 80, this);
               }
           };
 
@@ -568,9 +805,16 @@ jobs:
           DECLARE_BOARD(WkEsp32s3Dev);
           EOF
 
-      - name: Buffer de audio anti-cortes (360ms)
+      - name: Desacoplar Tenclass Cloud y forzar servidor local Bitbot (WebSocket & OTA)
         shell: bash
         run: |
+          # 1. Asegurar que InitializeProtocol siempre use WebsocketProtocol sin depender de Tenclass MQTT
+          sed -i 's/protocol_ = std::make_unique<MqttProtocol>();/protocol_ = std::make_unique<WebsocketProtocol>();/g' repo/main/application.cc
+          
+          # 2. Forzar endpoint WebSocket local si la URL esta vacia o tiene tenclass
+          sed -i 's|std::string url = settings.GetString("url");|std::string url = settings.GetString("url"); if (url.empty() || url.find("tenclass") != std::string::npos) url = "ws://192.168.0.50:8000/ws";|g' repo/main/protocols/websocket_protocol.cc
+
+          # 3. Buffer de audio anti-cortes (360ms)
           sed -i 's/#define MAX_PLAYBACK_TASKS_IN_QUEUE 2/#define MAX_PLAYBACK_TASKS_IN_QUEUE 6/g' repo/main/audio_service.h repo/main/audio_service.cc 2>/dev/null || true
 
       - name: Compilar Firmware
@@ -583,5 +827,5 @@ jobs:
       - name: Subir binario compilado
         uses: actions/upload-artifact@v4
         with:
-          name: troko_nextgen_touch_firmware
+          name: bitbot_emo_firmware
           path: repo/build/merged-binary.bin
