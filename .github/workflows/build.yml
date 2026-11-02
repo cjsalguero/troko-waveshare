@@ -1,4 +1,4 @@
-name: Compilar Troko Waveshare
+name: Compilar Bitbot EMO Stackchan Firmware
 
 on:
   workflow_dispatch:
@@ -65,13 +65,13 @@ jobs:
           // Bateria ADC (GPIO 5, divisor 200k/100k)
           #define BATTERY_ADC_PIN         GPIO_NUM_5
 
-          // Orientacion Horizontal (Panoramico 320x240 - USB Derecha)
+          // Orientacion Vertical Rostro Completo (240x320 - USB Abajo)
           #define LCD_TYPE_ST7789_SERIAL
-          #define DISPLAY_WIDTH           320
-          #define DISPLAY_HEIGHT          240
+          #define DISPLAY_WIDTH           240
+          #define DISPLAY_HEIGHT          320
           #define DISPLAY_MIRROR_X        false
-          #define DISPLAY_MIRROR_Y        true
-          #define DISPLAY_SWAP_XY         true
+          #define DISPLAY_MIRROR_Y        false
+          #define DISPLAY_SWAP_XY         false
           #define DISPLAY_INVERT_COLOR    true
           #define DISPLAY_RGB_ORDER       LCD_RGB_ELEMENT_ORDER_RGB
           #define DISPLAY_OFFSET_X        0
@@ -133,6 +133,10 @@ jobs:
           #include <string>
           #include <cmath>
           #include <esp_timer.h>
+          #include <esp_netif.h>
+          #include <esp_event.h>
+          #include <lwip/ip_addr.h>
+          #include <lwip/dns.h>
           #include "adc_battery_monitor.h"
 
           #ifndef ESP_LCD_TOUCH_IO_I2C_CST816S_ADDRESS
@@ -143,183 +147,17 @@ jobs:
 
           LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
 
-          class TrokoDisplay : public SpiLcdDisplay {
+          class BitbotDisplay : public SpiLcdDisplay {
           private:
-              int current_page_ = 0; // 0: Troko Ojos, 1: Reloj/Clima/Bateria, 2: Habitos, 3: Pomodoro
-
-              // Widgets de Bateria
-              lv_obj_t* battery_label_ = nullptr;
-              lv_obj_t* battery_detail_label_ = nullptr;
-
-              // Doble toque
               int64_t last_tap_time_ms_ = 0;
-
-              lv_obj_t* page_clock_ = nullptr;
-              lv_obj_t* clock_label_ = nullptr;
-              lv_obj_t* date_label_ = nullptr;
-              lv_obj_t* weather_label_ = nullptr;
-
-              lv_obj_t* page_habits_ = nullptr;
-
-              lv_obj_t* page_pomodoro_ = nullptr;
-              lv_obj_t* pomodoro_label_ = nullptr;
-              lv_obj_t* pomodoro_btn_ = nullptr;
-              lv_obj_t* pomodoro_btn_label_ = nullptr;
-              bool pomodoro_running_ = false;
-              int pomodoro_seconds_left_ = 25 * 60;
-
-              lv_timer_t* tick_timer_ = nullptr;
-
-              void CreateClockPage() {
-                  auto screen = lv_screen_active();
-                  page_clock_ = lv_obj_create(screen);
-                  lv_obj_set_size(page_clock_, 320, 240);
-                  lv_obj_set_style_bg_color(page_clock_, lv_color_black(), 0);
-                  lv_obj_set_style_border_width(page_clock_, 0, 0);
-                  lv_obj_set_style_pad_all(page_clock_, 8, 0);
-                  lv_obj_set_flex_flow(page_clock_, LV_FLEX_FLOW_COLUMN);
-                  lv_obj_set_flex_align(page_clock_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-                  lv_obj_t* ind = lv_label_create(page_clock_);
-                  lv_label_set_text(ind, "o  *  o  o   RELOJ Y CLIMA");
-                  lv_obj_set_style_text_color(ind, lv_color_hex(0x666666), 0);
-
-                  clock_label_ = lv_label_create(page_clock_);
-                  lv_label_set_text(clock_label_, "--:--");
-                  lv_obj_set_style_text_color(clock_label_, lv_color_hex(0xb5ff43), 0);
-                  lv_obj_set_style_margin_top(clock_label_, 6, 0);
-
-                  date_label_ = lv_label_create(page_clock_);
-                  lv_label_set_text(date_label_, "Sincronizando fecha...");
-                  lv_obj_set_style_text_color(date_label_, lv_color_hex(0xffffff), 0);
-                  lv_obj_set_style_margin_top(date_label_, 4, 0);
-
-                  battery_detail_label_ = lv_label_create(page_clock_);
-                  lv_label_set_text(battery_detail_label_, "Bateria: 100% (OK)");
-                  lv_obj_set_style_text_color(battery_detail_label_, lv_color_hex(0xb5ff43), 0);
-                  lv_obj_set_style_margin_top(battery_detail_label_, 4, 0);
-
-                  weather_label_ = lv_label_create(page_clock_);
-                  lv_label_set_text(weather_label_, "22 C - Despejado  |  WiFi OK");
-                  lv_obj_set_style_text_color(weather_label_, lv_color_hex(0x888888), 0);
-                  lv_obj_set_style_margin_top(weather_label_, 8, 0);
-
-                  lv_obj_t* hint = lv_label_create(page_clock_);
-                  lv_label_set_text(hint, "< Troko            Habitos >");
-                  lv_obj_set_style_text_color(hint, lv_color_hex(0x444444), 0);
-                  lv_obj_set_style_margin_top(hint, 10, 0);
-
-                  lv_obj_add_flag(page_clock_, LV_OBJ_FLAG_HIDDEN);
-              }
-
-              void CreateHabitsPage() {
-                  auto screen = lv_screen_active();
-                  page_habits_ = lv_obj_create(screen);
-                  lv_obj_set_size(page_habits_, 320, 240);
-                  lv_obj_set_style_bg_color(page_habits_, lv_color_black(), 0);
-                  lv_obj_set_style_border_width(page_habits_, 0, 0);
-                  lv_obj_set_style_pad_all(page_habits_, 10, 0);
-                  lv_obj_set_flex_flow(page_habits_, LV_FLEX_FLOW_COLUMN);
-
-                  lv_obj_t* ind = lv_label_create(page_habits_);
-                  lv_label_set_text(ind, "o  o  *  o   HABITOS Y TAREAS");
-                  lv_obj_set_style_text_color(ind, lv_color_hex(0x666666), 0);
-
-                  const char* default_tasks[] = {
-                      "[ ] Tomar agua (1.5L)",
-                      "[ ] Caminar 30 minutos",
-                      "[ ] Proyecto Troko IA",
-                      "[ ] Revisar correos pendientes"
-                  };
-
-                  for (int i = 0; i < 4; i++) {
-                      lv_obj_t* task_item = lv_label_create(page_habits_);
-                      lv_label_set_text(task_item, default_tasks[i]);
-                      lv_obj_set_style_text_color(task_item, lv_color_hex(0xffffff), 0);
-                      lv_obj_set_style_margin_top(task_item, 8, 0);
-                      lv_obj_add_flag(task_item, LV_OBJ_FLAG_CLICKABLE);
-
-                      lv_obj_add_event_cb(task_item, [](lv_event_t* e) {
-                          lv_obj_t* label = static_cast<lv_obj_t*>(lv_event_get_target(e));
-                          const char* current = lv_label_get_text(label);
-                          if (strncmp(current, "[ ] ", 4) == 0) {
-                              std::string s = "[X] " + std::string(current + 4);
-                              lv_label_set_text(label, s.c_str());
-                              lv_obj_set_style_text_color(label, lv_color_hex(0xb5ff43), 0);
-                          } else if (strncmp(current, "[X] ", 4) == 0) {
-                              std::string s = "[ ] " + std::string(current + 4);
-                              lv_label_set_text(label, s.c_str());
-                              lv_obj_set_style_text_color(label, lv_color_hex(0xffffff), 0);
-                          }
-                      }, LV_EVENT_CLICKED, nullptr);
-                  }
-
-                  lv_obj_t* hint = lv_label_create(page_habits_);
-                  lv_label_set_text(hint, "< Reloj            Pomodoro >");
-                  lv_obj_set_style_text_color(hint, lv_color_hex(0x444444), 0);
-                  lv_obj_set_style_margin_top(hint, 10, 0);
-
-                  lv_obj_add_flag(page_habits_, LV_OBJ_FLAG_HIDDEN);
-              }
-
-              void CreatePomodoroPage() {
-                  auto screen = lv_screen_active();
-                  page_pomodoro_ = lv_obj_create(screen);
-                  lv_obj_set_size(page_pomodoro_, 320, 240);
-                  lv_obj_set_style_bg_color(page_pomodoro_, lv_color_black(), 0);
-                  lv_obj_set_style_border_width(page_pomodoro_, 0, 0);
-                  lv_obj_set_style_pad_all(page_pomodoro_, 8, 0);
-                  lv_obj_set_flex_flow(page_pomodoro_, LV_FLEX_FLOW_COLUMN);
-                  lv_obj_set_flex_align(page_pomodoro_, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-                  lv_obj_t* ind = lv_label_create(page_pomodoro_);
-                  lv_label_set_text(ind, "o  o  o  *   POMODORO FOCUS");
-                  lv_obj_set_style_text_color(ind, lv_color_hex(0x666666), 0);
-
-                  pomodoro_label_ = lv_label_create(page_pomodoro_);
-                  lv_label_set_text(pomodoro_label_, "25:00");
-                  lv_obj_set_style_text_color(pomodoro_label_, lv_color_hex(0xb5ff43), 0);
-                  lv_obj_set_style_margin_top(pomodoro_label_, 6, 0);
-
-                  pomodoro_btn_ = lv_obj_create(page_pomodoro_);
-                  lv_obj_set_size(pomodoro_btn_, 140, 38);
-                  lv_obj_set_style_bg_color(pomodoro_btn_, lv_color_hex(0x1a3a1a), 0);
-                  lv_obj_set_style_border_color(pomodoro_btn_, lv_color_hex(0xb5ff43), 0);
-                  lv_obj_set_style_border_width(pomodoro_btn_, 2, 0);
-                  lv_obj_set_style_radius(pomodoro_btn_, 8, 0);
-                  lv_obj_set_style_margin_top(pomodoro_btn_, 8, 0);
-                  lv_obj_add_flag(pomodoro_btn_, LV_OBJ_FLAG_CLICKABLE);
-
-                  pomodoro_btn_label_ = lv_label_create(pomodoro_btn_);
-                  lv_label_set_text(pomodoro_btn_label_, "INICIAR");
-                  lv_obj_center(pomodoro_btn_label_);
-                  lv_obj_set_style_text_color(pomodoro_btn_label_, lv_color_hex(0xb5ff43), 0);
-
-                  lv_obj_add_event_cb(pomodoro_btn_, [](lv_event_t* e) {
-                      auto self = static_cast<TrokoDisplay*>(lv_event_get_user_data(e));
-                      if (self->pomodoro_seconds_left_ == 0) {
-                          self->pomodoro_seconds_left_ = 25 * 60;
-                          self->pomodoro_running_ = true;
-                          lv_label_set_text(self->pomodoro_btn_label_, "PAUSA");
-                      } else {
-                          self->pomodoro_running_ = !self->pomodoro_running_;
-                          lv_label_set_text(self->pomodoro_btn_label_, self->pomodoro_running_ ? "PAUSA" : "INICIAR");
-                      }
-                      self->UpdatePomodoroDisplay();
-                  }, LV_EVENT_CLICKED, this);
-
-                  lv_obj_t* hint = lv_label_create(page_pomodoro_);
-                  lv_label_set_text(hint, "< Habitos            Troko >");
-                  lv_obj_set_style_text_color(hint, lv_color_hex(0x444444), 0);
-                  lv_obj_set_style_margin_top(hint, 8, 0);
-
-                  lv_obj_add_flag(page_pomodoro_, LV_OBJ_FLAG_HIDDEN);
-              }
+              lv_obj_t* mouth_ = nullptr;
+              lv_timer_t* lip_sync_timer_ = nullptr;
+              int mouth_state_ = 0;
 
           public:
-              TrokoDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
-                           int width, int height, int offset_x, int offset_y,
-                           bool mirror_x, bool mirror_y, bool swap_xy)
+              BitbotDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
+                            int width, int height, int offset_x, int offset_y,
+                            bool mirror_x, bool mirror_y, bool swap_xy)
                   : SpiLcdDisplay(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy) {}
 
               virtual void SetupUI() override {
@@ -327,194 +165,66 @@ jobs:
 
                   DisplayLockGuard lock(this);
                   auto screen = lv_screen_active();
+                  lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
 
-                  // Indicador de bateria en la esquina superior derecha
-                  battery_label_ = lv_label_create(screen);
-                  lv_label_set_text(battery_label_, "100%");
-                  lv_obj_set_style_text_color(battery_label_, lv_color_hex(0xb5ff43), 0);
-                  lv_obj_align(battery_label_, LV_ALIGN_TOP_RIGHT, -8, 6);
+                  // Ocultar barras y textos superfluos para rostro puro
+                  if (chat_message_label_) lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
+                  if (status_bar_) lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
 
+                  // Acomodar los ojos en la mitad superior de la pantalla vertical 240x320
+                  if (emoji_box_) {
+                      lv_obj_set_size(emoji_box_, 240, 180);
+                      lv_obj_align(emoji_box_, LV_ALIGN_TOP_MID, 0, 10);
+                  }
+                  if (emoji_image_) {
+                      lv_obj_align(emoji_image_, LV_ALIGN_CENTER, 0, 0);
+                  }
+
+                  // Boca Vectorial Reactiva Estilo Stackchan en la mitad inferior
+                  mouth_ = lv_obj_create(screen);
+                  lv_obj_set_size(mouth_, 60, 10); // Forma sutil en reposo
+                  lv_obj_align(mouth_, LV_ALIGN_BOTTOM_MID, 0, -45);
+                  lv_obj_set_style_bg_color(mouth_, lv_color_hex(0xb5ff43), 0); // Verde tierno brillante
+                  lv_obj_set_style_border_width(mouth_, 0, 0);
+                  lv_obj_set_style_radius(mouth_, LV_RADIUS_CIRCLE, 0);
+
+                  // Interaccion tactil: toque simple conmuta voz, doble toque guino
                   lv_obj_add_flag(screen, LV_OBJ_FLAG_CLICKABLE);
-                  if (container_ != nullptr) {
-                      lv_obj_add_flag(container_, LV_OBJ_FLAG_CLICKABLE);
-                      lv_obj_add_flag(container_, LV_OBJ_FLAG_EVENT_BUBBLE);
-                  }
-                  if (content_ != nullptr) {
-                      lv_obj_add_flag(content_, LV_OBJ_FLAG_EVENT_BUBBLE);
-                  }
-                  if (emoji_box_ != nullptr) {
-                      lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_EVENT_BUBBLE);
-                  }
-                  if (emoji_image_ != nullptr) {
-                      lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_CLICKABLE);
-                      lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_EVENT_BUBBLE);
-                  }
-
                   lv_obj_add_event_cb(screen, [](lv_event_t* e) {
-                      auto self = static_cast<TrokoDisplay*>(lv_event_get_user_data(e));
+                      auto self = static_cast<BitbotDisplay*>(lv_event_get_user_data(e));
                       lv_event_code_t code = lv_event_get_code(e);
-
-                      if (code == LV_EVENT_GESTURE) {
-                          lv_indev_t* indev = lv_event_get_indev(e);
-                          if (indev != nullptr) {
-                              lv_dir_t dir = lv_indev_get_gesture_dir(indev);
-                              if (dir == LV_DIR_LEFT) {
-                                  self->NextPage();
-                              } else if (dir == LV_DIR_RIGHT) {
-                                  self->PrevPage();
-                              }
-                          }
-                      } else if (code == LV_EVENT_CLICKED) {
-                          if (self->current_page_ == 0) {
-                              int64_t now_ms = esp_timer_get_time() / 1000;
-                              if (now_ms - self->last_tap_time_ms_ < 380) {
-                                  // Doble toque rapido: guino coqueto
-                                  self->SetEmotion("winking");
-                                  self->last_tap_time_ms_ = 0;
-                              } else {
-                                  self->last_tap_time_ms_ = now_ms;
-                                  auto& app = Application::GetInstance();
-                                  app.ToggleChatState();
-                              }
-                          }
-                      } else if (code == LV_EVENT_DOUBLE_CLICKED) {
-                          if (self->current_page_ == 0) {
+                      if (code == LV_EVENT_CLICKED) {
+                          int64_t now_ms = esp_timer_get_time() / 1000;
+                          if (now_ms - self->last_tap_time_ms_ < 380) {
                               self->SetEmotion("winking");
+                              self->last_tap_time_ms_ = 0;
+                          } else {
+                              self->last_tap_time_ms_ = now_ms;
+                              auto& app = Application::GetInstance();
+                              app.ToggleChatState();
                           }
                       }
-                  }, LV_EVENT_ALL, this);
+                  }, LV_EVENT_CLICKED, this);
 
-                  CreateClockPage();
-                  CreateHabitsPage();
-                  CreatePomodoroPage();
+                  // Timer de animacion de Lip-Sync de la boca al hablar
+                  lip_sync_timer_ = lv_timer_create([](lv_timer_t* t) {
+                      auto self = static_cast<BitbotDisplay*>(lv_timer_get_user_data(t));
+                      auto& app = Application::GetInstance();
+                      auto state = app.GetDeviceState();
 
-                  tick_timer_ = lv_timer_create([](lv_timer_t* t) {
-                      auto self = static_cast<TrokoDisplay*>(lv_timer_get_user_data(t));
-                      self->OnTimerTick();
-                  }, 1000, this);
-              }
+                      if (!self->mouth_) return;
 
-              void SwitchToPage(int page) {
-                  if (page < 0) page = 3;
-                  if (page > 3) page = 0;
-                  current_page_ = page;
-
-                  DisplayLockGuard lock(this);
-
-                  if (current_page_ == 0) {
-                      if (container_) lv_obj_remove_flag(container_, LV_OBJ_FLAG_HIDDEN);
-                      if (status_bar_) lv_obj_remove_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
-                      if (emoji_image_) lv_obj_remove_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
-                  } else {
-                      if (container_) lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
-                      if (status_bar_) lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
-                      if (emoji_image_) lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
-                  }
-
-                  if (page_clock_) {
-                      if (current_page_ == 1) {
-                          lv_obj_remove_flag(page_clock_, LV_OBJ_FLAG_HIDDEN);
-                          UpdateClock();
+                      if (state == kDeviceStateSpeaking) {
+                          // Lip-sync activo: modular tamano de la boca simulando habla
+                          self->mouth_state_ = (self->mouth_state_ + 1) % 4;
+                          int heights[] = {8, 22, 14, 28};
+                          int widths[]  = {50, 42, 60, 46};
+                          lv_obj_set_size(self->mouth_, widths[self->mouth_state_], heights[self->mouth_state_]);
                       } else {
-                          lv_obj_add_flag(page_clock_, LV_OBJ_FLAG_HIDDEN);
+                          // En reposo o escucha: boquita sonriente normal
+                          lv_obj_set_size(self->mouth_, 50, 8);
                       }
-                  }
-
-                  if (page_habits_) {
-                      if (current_page_ == 2) {
-                          lv_obj_remove_flag(page_habits_, LV_OBJ_FLAG_HIDDEN);
-                      } else {
-                          lv_obj_add_flag(page_habits_, LV_OBJ_FLAG_HIDDEN);
-                      }
-                  }
-
-                  if (page_pomodoro_) {
-                      if (current_page_ == 3) {
-                          lv_obj_remove_flag(page_pomodoro_, LV_OBJ_FLAG_HIDDEN);
-                      } else {
-                          lv_obj_add_flag(page_pomodoro_, LV_OBJ_FLAG_HIDDEN);
-                      }
-                  }
-              }
-
-              void NextPage() { SwitchToPage(current_page_ + 1); }
-              void PrevPage() { SwitchToPage(current_page_ - 1); }
-
-              virtual bool SetEmotion(const char* emotion) override {
-                  if (current_page_ != 0) {
-                      SwitchToPage(0);
-                  }
-                  return SpiLcdDisplay::SetEmotion(emotion);
-              }
-
-              virtual void SetChatMessage(const char* role, const char* content) override {
-                  if (current_page_ != 0) {
-                      SwitchToPage(0);
-                  }
-                  SpiLcdDisplay::SetChatMessage(role, content);
-              }
-
-              void OnTimerTick() {
-                  if (current_page_ == 1) {
-                      UpdateClock();
-                  }
-
-                  int bat_level = 100;
-                  bool is_chg = false, is_dis = true;
-                  if (Board::GetInstance().GetBatteryLevel(bat_level, is_chg, is_dis)) {
-                      if (battery_label_) {
-                          char b_buf[16];
-                          snprintf(b_buf, sizeof(b_buf), "%d%%", bat_level);
-                          lv_label_set_text(battery_label_, b_buf);
-                      }
-                      if (battery_detail_label_ && current_page_ == 1) {
-                          char d_buf[32];
-                          snprintf(d_buf, sizeof(d_buf), "Bateria: %d%% (%s)", bat_level, is_chg ? "Cargando" : "OK");
-                          lv_label_set_text(battery_detail_label_, d_buf);
-                      }
-                  }
-
-                  if (pomodoro_running_ && pomodoro_seconds_left_ > 0) {
-                      pomodoro_seconds_left_--;
-                      UpdatePomodoroDisplay();
-
-                      if (pomodoro_seconds_left_ == 0) {
-                          pomodoro_running_ = false;
-                          if (pomodoro_btn_label_) {
-                              lv_label_set_text(pomodoro_btn_label_, "REINICIAR");
-                          }
-                          ShowNotification("Pomodoro finalizado! Descanso de 5 min.");
-                      }
-                  }
-              }
-
-              void UpdateClock() {
-                  if (!clock_label_) return;
-                  time_t now = time(nullptr);
-                  struct tm timeinfo;
-                  localtime_r(&now, &timeinfo);
-
-                  char time_str[16];
-                  snprintf(time_str, sizeof(time_str), "%02d:%02d", timeinfo.tm_hour, timeinfo.tm_min);
-                  lv_label_set_text(clock_label_, time_str);
-
-                  if (date_label_) {
-                      const char* dias[] = {"Dom", "Lun", "Mar", "Mie", "Jue", "Vie", "Sab"};
-                      const char* meses[] = {"Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"};
-                      char date_str[48];
-                      snprintf(date_str, sizeof(date_str), "%s, %d %s",
-                               dias[timeinfo.tm_wday], timeinfo.tm_mday, meses[timeinfo.tm_mon]);
-                      lv_label_set_text(date_label_, date_str);
-                  }
-              }
-
-              void UpdatePomodoroDisplay() {
-                  if (!pomodoro_label_) return;
-                  int mins = pomodoro_seconds_left_ / 60;
-                  int secs = pomodoro_seconds_left_ % 60;
-                  char str[16];
-                  snprintf(str, sizeof(str), "%02d:%02d", mins, secs);
-                  lv_label_set_text(pomodoro_label_, str);
+                  }, 90, this);
               }
           };
 
@@ -529,138 +239,92 @@ jobs:
               Button volume_up_button_;
               Button volume_down_button_;
 
-              // Monitor de Bateria Oficial XiaoZhi
               AdcBatteryMonitor* adc_battery_monitor_ = nullptr;
-
-              // Sensor de Movimiento IMU QMI8658
               i2c_master_dev_handle_t qmi_dev_ = nullptr;
               bool qmi_initialized_ = false;
               bool privacy_mode_active_ = false;
               int64_t last_shake_time_ms_ = 0;
 
               void InitializeBattery() {
-                  // GPIO 5 = ADC1 Channel 4, Divisor R19=200k, R20=100k, pin carga NC
                   adc_battery_monitor_ = new AdcBatteryMonitor(ADC_UNIT_1, ADC_CHANNEL_4, 200000.0f, 100000.0f, GPIO_NUM_NC);
-                  ESP_LOGI(TAG, "AdcBatteryMonitor inicializado en GPIO 5 (ADC1_CH4, divisor x3.0)");
+                  ESP_LOGI(TAG, "AdcBatteryMonitor inicializado en GPIO 5");
               }
 
               void InitializeQmi8658() {
                   if (!i2c_bus_) return;
-
                   i2c_device_config_t dev_cfg = {
                       .dev_addr_length = I2C_ADDR_BIT_LEN_7,
                       .device_address = 0x6B,
                       .scl_speed_hz = 100000,
                   };
                   esp_err_t err = i2c_master_bus_add_device(i2c_bus_, &dev_cfg, &qmi_dev_);
-                  if (err != ESP_OK) {
-                      ESP_LOGW(TAG, "QMI8658 device add failed: %s", esp_err_to_name(err));
-                      return;
-                  }
+                  if (err != ESP_OK) return;
 
-                  uint8_t reg_who = 0x00;
-                  uint8_t who_val = 0;
+                  uint8_t reg_who = 0x00, who_val = 0;
                   err = i2c_master_transmit_receive(qmi_dev_, &reg_who, 1, &who_val, 1, 100);
                   if (err != ESP_OK || who_val != 0x05) {
-                      ESP_LOGW(TAG, "QMI8658 check on 0x6B (val=0x%02x), trying 0x6A...", who_val);
                       i2c_master_bus_rm_device(qmi_dev_);
                       dev_cfg.device_address = 0x6A;
                       if (i2c_master_bus_add_device(i2c_bus_, &dev_cfg, &qmi_dev_) == ESP_OK) {
-                          err = i2c_master_transmit_receive(qmi_dev_, &reg_who, 1, &who_val, 1, 100);
+                          i2c_master_transmit_receive(qmi_dev_, &reg_who, 1, &who_val, 1, 100);
                       }
                   }
-
-                  if (err == ESP_OK && who_val == 0x05) {
-                      ESP_LOGI(TAG, "QMI8658 detectado exitosamente (whoami = 0x%02x)!", who_val);
-                      uint8_t c1[2] = {0x02, 0x60}; // CTRL1: auto-increment
+                  if (who_val == 0x05) {
+                      uint8_t c1[2] = {0x02, 0x60}, c2[2] = {0x03, 0x23}, c3[2] = {0x04, 0x43}, c7[2] = {0x08, 0x03};
                       i2c_master_transmit(qmi_dev_, c1, 2, 100);
-                      uint8_t c2[2] = {0x03, 0x23}; // CTRL2: Acc +/- 4g, 100Hz
                       i2c_master_transmit(qmi_dev_, c2, 2, 100);
-                      uint8_t c3[2] = {0x04, 0x43}; // CTRL3: Gyro +/- 512dps, 100Hz
                       i2c_master_transmit(qmi_dev_, c3, 2, 100);
-                      uint8_t c7[2] = {0x08, 0x03}; // CTRL7: Enable Acc & Gyro
                       i2c_master_transmit(qmi_dev_, c7, 2, 100);
                       qmi_initialized_ = true;
-                  } else {
-                      ESP_LOGW(TAG, "QMI8658 IMU no respondio, continuando sin sensor de movimiento.");
+                      ESP_LOGI(TAG, "QMI8658 detectado exitosamente!");
                   }
               }
 
               bool ReadImu(float &ax, float &ay, float &az) {
                   if (!qmi_initialized_ || !qmi_dev_) return false;
-                  uint8_t reg = 0x35; // AX_L
-                  uint8_t buf[6] = {0};
-                  esp_err_t err = i2c_master_transmit_receive(qmi_dev_, &reg, 1, buf, 6, 50);
-                  if (err != ESP_OK) return false;
-
-                  int16_t rx = (int16_t)(buf[1] << 8 | buf[0]);
-                  int16_t ry = (int16_t)(buf[3] << 8 | buf[2]);
-                  int16_t rz = (int16_t)(buf[5] << 8 | buf[4]);
-
-                  ax = rx / 4096.0f;
-                  ay = ry / 4096.0f;
-                  az = rz / 4096.0f;
+                  uint8_t reg = 0x35, buf[6] = {0};
+                  if (i2c_master_transmit_receive(qmi_dev_, &reg, 1, buf, 6, 50) != ESP_OK) return false;
+                  ax = (int16_t)(buf[1] << 8 | buf[0]) / 4096.0f;
+                  ay = (int16_t)(buf[3] << 8 | buf[2]) / 4096.0f;
+                  az = (int16_t)(buf[5] << 8 | buf[4]) / 4096.0f;
                   return true;
               }
 
               void StartImuTask() {
                   if (!qmi_initialized_) return;
-
                   xTaskCreate([](void* arg) {
                       auto self = static_cast<WkEsp32s3Dev*>(arg);
-                      int face_down_count = 0;
-                      int upright_count = 0;
-
+                      int face_down_count = 0, upright_count = 0;
                       while (true) {
-                          vTaskDelay(pdMS_TO_TICKS(100)); // 10 Hz
-
+                          vTaskDelay(pdMS_TO_TICKS(100));
                           float ax = 0, ay = 0, az = 0;
                           if (!self->ReadImu(ax, ay, az)) continue;
-
                           float mag = std::sqrt(ax * ax + ay * ay + az * az);
                           int64_t now_ms = esp_timer_get_time() / 1000;
-
-                          // 1. Deteccion de sacudida (Mareo)
                           if (mag > 1.85f || (mag < 0.25f && mag > 0.01f)) {
                               if (now_ms - self->last_shake_time_ms_ > 4000) {
                                   self->last_shake_time_ms_ = now_ms;
-                                  ESP_LOGI(TAG, "Troko sacudido (mag=%.2f)! Activando mareo.", mag);
-                                  if (self->display_) {
-                                      self->display_->SetEmotion("confused");
-                                  }
+                                  if (self->display_) self->display_->SetEmotion("confused");
                               }
                           }
-
-                          // 2. Modo Privacidad Boca Abajo (az > 0.70g)
                           if (az > 0.70f) {
-                              face_down_count++;
-                              upright_count = 0;
+                              face_down_count++; upright_count = 0;
                               if (face_down_count >= 4 && !self->privacy_mode_active_) {
                                   self->privacy_mode_active_ = true;
-                                  ESP_LOGI(TAG, "Modo Privacidad Activado (Boca Abajo)");
-                                  if (self->GetBacklight()) {
-                                      self->GetBacklight()->SetBrightness(0);
-                                  }
+                                  if (self->GetBacklight()) self->GetBacklight()->SetBrightness(0);
                               }
                           } else if (az < 0.35f) {
-                              upright_count++;
-                              face_down_count = 0;
+                              upright_count++; face_down_count = 0;
                               if (upright_count >= 3 && self->privacy_mode_active_) {
                                   self->privacy_mode_active_ = false;
-                                  ESP_LOGI(TAG, "Modo Privacidad Desactivado (Visible)");
-                                  if (self->GetBacklight()) {
-                                      self->GetBacklight()->RestoreBrightness();
-                                  }
-                                  if (self->display_) {
-                                      self->display_->SetEmotion("happy");
-                                  }
+                                  if (self->GetBacklight()) self->GetBacklight()->RestoreBrightness();
+                                  if (self->display_) self->display_->SetEmotion("happy");
                               }
                           } else {
-                              face_down_count = 0;
-                              upright_count = 0;
+                              face_down_count = 0; upright_count = 0;
                           }
                       }
-                  }, "troko_imu", 3072, this, 1, nullptr);
+                  }, "bitbot_imu", 3072, this, 1, nullptr);
               }
 
               void InitializeI2c() {
@@ -772,14 +436,14 @@ jobs:
                   ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_, DISPLAY_SWAP_XY));
                   ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
 
-                  display_ = new TrokoDisplay(panel_io_, panel_,
-                                              DISPLAY_WIDTH,
-                                              DISPLAY_HEIGHT,
-                                              DISPLAY_OFFSET_X,
-                                              DISPLAY_OFFSET_Y,
-                                              DISPLAY_MIRROR_X,
-                                              DISPLAY_MIRROR_Y,
-                                              DISPLAY_SWAP_XY);
+                  display_ = new BitbotDisplay(panel_io_, panel_,
+                                               DISPLAY_WIDTH,
+                                               DISPLAY_HEIGHT,
+                                               DISPLAY_OFFSET_X,
+                                               DISPLAY_OFFSET_Y,
+                                               DISPLAY_MIRROR_X,
+                                               DISPLAY_MIRROR_Y,
+                                               DISPLAY_SWAP_XY);
               }
 
               void InitializeButtons() {
@@ -840,6 +504,35 @@ jobs:
                   InitializeButtons();
                   InitializeTools();
                   StartImuTask();
+
+                  // DNS robusto (8.8.8.8 y 1.1.1.1)
+                  esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, [](void* arg, esp_event_base_t base, int32_t id, void* event_data) {
+                      esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
+                      if (netif) {
+                          esp_netif_dns_info_t dns_main, dns_backup;
+                          dns_main.ip.type = ESP_IPADDR_TYPE_V4;
+                          dns_main.ip.u_addr.ip4.addr = ipaddr_addr("8.8.8.8");
+                          esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns_main);
+                          dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
+                          dns_backup.ip.u_addr.ip4.addr = ipaddr_addr("1.1.1.1");
+                          esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
+                      }
+                      ip_addr_t d1, d2;
+                      ipaddr_aton("8.8.8.8", &d1);
+                      dns_setserver(0, &d1);
+                      ipaddr_aton("1.1.1.1", &d2);
+                      dns_setserver(1, &d2);
+                  }, nullptr);
+              }
+
+              virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
+                  if (adc_battery_monitor_ != nullptr) {
+                      charging = adc_battery_monitor_->IsCharging();
+                      discharging = adc_battery_monitor_->IsDischarging();
+                      level = adc_battery_monitor_->GetBatteryLevel();
+                      return true;
+                  }
+                  return false;
               }
 
               virtual Led* GetLed() override {
@@ -870,21 +563,14 @@ jobs:
                   }
                   return nullptr;
               }
-
-              virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
-                  if (adc_battery_monitor_ != nullptr) {
-                      charging = adc_battery_monitor_->IsCharging();
-                      discharging = adc_battery_monitor_->IsDischarging();
-                      level = adc_battery_monitor_->GetBatteryLevel();
-                      return true;
-                  }
-                  return false;
-              }
           };
 
           DECLARE_BOARD(WkEsp32s3Dev);
           EOF
 
+      - name: Buffer de audio anti-cortes (360ms)
+        shell: bash
+        run: |
           sed -i 's/#define MAX_PLAYBACK_TASKS_IN_QUEUE 2/#define MAX_PLAYBACK_TASKS_IN_QUEUE 6/g' repo/main/audio_service.h repo/main/audio_service.cc 2>/dev/null || true
 
       - name: Compilar Firmware
