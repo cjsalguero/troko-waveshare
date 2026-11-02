@@ -192,7 +192,6 @@ jobs:
 
               std::string current_emotion_ = "neutral";
               int mouth_state_ = 0;
-              int64_t last_tap_time_ms_ = 0;
 
               void ApplyEmotionInternal(const std::string& emo) {
                   if (emo == "happy" || emo == "laughing" || emo == "funny" || emo == "joy") {
@@ -365,6 +364,7 @@ jobs:
                   DisplayLockGuard lock(this);
                   auto screen = lv_screen_active();
                   lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
+                  lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
                   // Ocultar por completo widgets de texto y emojis clasicos de Xiaozhi
                   if (chat_message_label_) lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
@@ -372,10 +372,24 @@ jobs:
                   if (emoji_box_) lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
                   if (emoji_image_) lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
                   if (emoji_label_) lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
+                  if (container_) {
+                      lv_obj_remove_flag(container_, LV_OBJ_FLAG_CLICKABLE);
+                      lv_obj_remove_flag(container_, LV_OBJ_FLAG_SCROLLABLE);
+                      lv_obj_add_flag(container_, LV_OBJ_FLAG_EVENT_BUBBLE);
+                      lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
+                  }
+                  if (content_) {
+                      lv_obj_remove_flag(content_, LV_OBJ_FLAG_CLICKABLE);
+                      lv_obj_remove_flag(content_, LV_OBJ_FLAG_SCROLLABLE);
+                      lv_obj_add_flag(content_, LV_OBJ_FLAG_EVENT_BUBBLE);
+                      lv_obj_add_flag(content_, LV_OBJ_FLAG_HIDDEN);
+                  }
 
                   // Ojo Izquierdo Vectorial EMO
                   left_eye_ = lv_obj_create(screen);
-                  lv_obj_clear_flag(left_eye_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_remove_flag(left_eye_, LV_OBJ_FLAG_CLICKABLE);
+                  lv_obj_remove_flag(left_eye_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_add_flag(left_eye_, LV_OBJ_FLAG_EVENT_BUBBLE);
                   lv_obj_set_style_border_width(left_eye_, 0, 0);
                   lv_obj_set_style_pad_all(left_eye_, 0, 0);
                   lv_obj_set_style_clip_corner(left_eye_, true, 0);
@@ -385,7 +399,9 @@ jobs:
                   lv_obj_set_pos(left_eye_, DEFAULT_LX, DEFAULT_EY);
 
                   left_top_lid_ = lv_obj_create(left_eye_);
-                  lv_obj_clear_flag(left_top_lid_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_remove_flag(left_top_lid_, LV_OBJ_FLAG_CLICKABLE);
+                  lv_obj_remove_flag(left_top_lid_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_add_flag(left_top_lid_, LV_OBJ_FLAG_EVENT_BUBBLE);
                   lv_obj_set_style_border_width(left_top_lid_, 0, 0);
                   lv_obj_set_style_pad_all(left_top_lid_, 0, 0);
                   lv_obj_set_style_bg_color(left_top_lid_, lv_color_black(), 0);
@@ -394,7 +410,9 @@ jobs:
                   lv_obj_align(left_top_lid_, LV_ALIGN_TOP_MID, 0, 0);
 
                   left_bot_lid_ = lv_obj_create(left_eye_);
-                  lv_obj_clear_flag(left_bot_lid_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_remove_flag(left_bot_lid_, LV_OBJ_FLAG_CLICKABLE);
+                  lv_obj_remove_flag(left_bot_lid_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_add_flag(left_bot_lid_, LV_OBJ_FLAG_EVENT_BUBBLE);
                   lv_obj_set_style_border_width(left_bot_lid_, 0, 0);
                   lv_obj_set_style_pad_all(left_bot_lid_, 0, 0);
                   lv_obj_set_style_bg_color(left_bot_lid_, lv_color_black(), 0);
@@ -404,7 +422,9 @@ jobs:
 
                   // Ojo Derecho Vectorial EMO
                   right_eye_ = lv_obj_create(screen);
-                  lv_obj_clear_flag(right_eye_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_remove_flag(right_eye_, LV_OBJ_FLAG_CLICKABLE);
+                  lv_obj_remove_flag(right_eye_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_add_flag(right_eye_, LV_OBJ_FLAG_EVENT_BUBBLE);
                   lv_obj_set_style_border_width(right_eye_, 0, 0);
                   lv_obj_set_style_pad_all(right_eye_, 0, 0);
                   lv_obj_set_style_clip_corner(right_eye_, true, 0);
@@ -414,7 +434,9 @@ jobs:
                   lv_obj_set_pos(right_eye_, DEFAULT_RX, DEFAULT_EY);
 
                   right_top_lid_ = lv_obj_create(right_eye_);
-                  lv_obj_clear_flag(right_top_lid_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_remove_flag(right_top_lid_, LV_OBJ_FLAG_CLICKABLE);
+                  lv_obj_remove_flag(right_top_lid_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_add_flag(right_top_lid_, LV_OBJ_FLAG_EVENT_BUBBLE);
                   lv_obj_set_style_border_width(right_top_lid_, 0, 0);
                   lv_obj_set_style_pad_all(right_top_lid_, 0, 0);
                   lv_obj_set_style_bg_color(right_top_lid_, lv_color_black(), 0);
@@ -423,7 +445,9 @@ jobs:
                   lv_obj_align(right_top_lid_, LV_ALIGN_TOP_MID, 0, 0);
 
                   right_bot_lid_ = lv_obj_create(right_eye_);
-                  lv_obj_clear_flag(right_bot_lid_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_remove_flag(right_bot_lid_, LV_OBJ_FLAG_CLICKABLE);
+                  lv_obj_remove_flag(right_bot_lid_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_add_flag(right_bot_lid_, LV_OBJ_FLAG_EVENT_BUBBLE);
                   lv_obj_set_style_border_width(right_bot_lid_, 0, 0);
                   lv_obj_set_style_pad_all(right_bot_lid_, 0, 0);
                   lv_obj_set_style_bg_color(right_bot_lid_, lv_color_black(), 0);
@@ -433,7 +457,9 @@ jobs:
 
                   // Boca Vectorial
                   mouth_ = lv_obj_create(screen);
-                  lv_obj_clear_flag(mouth_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_remove_flag(mouth_, LV_OBJ_FLAG_CLICKABLE);
+                  lv_obj_remove_flag(mouth_, LV_OBJ_FLAG_SCROLLABLE);
+                  lv_obj_add_flag(mouth_, LV_OBJ_FLAG_EVENT_BUBBLE);
                   lv_obj_set_size(mouth_, 44, 8);
                   lv_obj_align(mouth_, LV_ALIGN_BOTTOM_MID, 0, -48);
                   lv_obj_set_style_bg_color(mouth_, lv_color_hex(0x00E5FF), 0);
@@ -441,23 +467,12 @@ jobs:
                   lv_obj_set_style_pad_all(mouth_, 0, 0);
                   lv_obj_set_style_radius(mouth_, LV_RADIUS_CIRCLE, 0);
 
-                  // Interaccion tactil en pantalla completa
+                  // Interaccion tactil en pantalla completa: entrar en modo escucha
                   lv_obj_add_flag(screen, LV_OBJ_FLAG_CLICKABLE);
                   lv_obj_add_event_cb(screen, [](lv_event_t* e) {
-                      auto self = static_cast<BitbotDisplay*>(lv_event_get_user_data(e));
-                      lv_event_code_t code = lv_event_get_code(e);
-                      if (code == LV_EVENT_CLICKED) {
-                          int64_t now_ms = esp_timer_get_time() / 1000;
-                          if (now_ms - self->last_tap_time_ms_ < 380) {
-                              self->SetEmotion("winking");
-                              self->last_tap_time_ms_ = 0;
-                          } else {
-                              self->last_tap_time_ms_ = now_ms;
-                              auto& app = Application::GetInstance();
-                              app.ToggleChatState();
-                          }
-                      }
-                  }, LV_EVENT_CLICKED, this);
+                      auto& app = Application::GetInstance();
+                      app.ToggleChatState();
+                  }, LV_EVENT_CLICKED, nullptr);
 
                   // Iniciar motores de animacion fluida a 33 FPS y comportamientos
                   anim_timer_ = lv_timer_create(OnAnimTimer, 30, this);
@@ -614,9 +629,9 @@ jobs:
                       .rst_gpio_num = GPIO_NUM_NC,
                       .int_gpio_num = TOUCH_INT_PIN,
                       .flags = {
-                          .swap_xy = 1,
+                          .swap_xy = 0,
                           .mirror_x = 0,
-                          .mirror_y = 1,
+                          .mirror_y = 0,
                       },
                   };
                   ESP_LOGI(TAG, "Initializing CST816D touch controller...");
@@ -684,7 +699,7 @@ jobs:
               }
 
               void InitializeButtons() {
-                  boot_button_.OnClick([this]() {
+                  boot_button_.OnPressDown([this]() {
                       auto& app = Application::GetInstance();
                       if (app.GetDeviceState() == kDeviceStateStarting) {
                           EnterWifiConfigMode();
@@ -829,7 +844,7 @@ jobs:
         working-directory: repo
         run: |
           source "$IDF_PATH/export.sh"
-          python scripts/build.py wk-esp32s3-dev --name wk-esp32s3-dev --language es-ES 2>&1 | tee build.log || (echo "=== LOG COMPILACION ===" && tail -n 80 build.log && exit 1)
+          python scripts/build.py wk-esp32s3-dev --name wk-esp32s3-dev --language es-ES --wake-word disabled 2>&1 | tee build.log || (echo "=== LOG COMPILACION ===" && tail -n 80 build.log && exit 1)
 
       - name: Subir binario compilado
         uses: actions/upload-artifact@v4
