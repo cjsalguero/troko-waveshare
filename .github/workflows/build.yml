@@ -810,9 +810,16 @@ jobs:
         run: |
           # 1. Asegurar que InitializeProtocol siempre use WebsocketProtocol sin depender de Tenclass MQTT
           sed -i 's/protocol_ = std::make_unique<MqttProtocol>();/protocol_ = std::make_unique<WebsocketProtocol>();/g' repo/main/application.cc
-          
-          # 2. Forzar endpoint WebSocket local si la URL esta vacia o tiene tenclass
-          sed -i 's|std::string url = settings.GetString("url");|std::string url = settings.GetString("url"); if (url.empty() || url.find("tenclass") != std::string::npos) url = "ws://192.168.0.50:8000/ws";|g' repo/main/protocols/websocket_protocol.cc
+
+          # 2. Forzar endpoint WebSocket local limpio con Python (sin problemas de sed)
+          python3 -c "
+          p = 'repo/main/protocols/websocket_protocol.cc'
+          with open(p, 'r') as f: c = f.read()
+          tgt = 'std::string url = settings.GetString(\"url\");'
+          inj = tgt + ' if (url.empty() || url.find(\"tenclass\") != std::string::npos) url = \"ws://192.168.0.50:8000/ws\";'
+          c = c.replace(tgt, inj)
+          with open(p, 'w') as f: f.write(c)
+          "
 
           # 3. Buffer de audio anti-cortes (360ms)
           sed -i 's/#define MAX_PLAYBACK_TASKS_IN_QUEUE 2/#define MAX_PLAYBACK_TASKS_IN_QUEUE 6/g' repo/main/audio_service.h repo/main/audio_service.cc 2>/dev/null || true
