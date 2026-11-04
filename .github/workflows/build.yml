@@ -1,4 +1,4 @@
-name: Compilar Troko Next-Gen Tactil
+name: Compilar Troko Next-Gen Tactil y Carrusel
 
 on:
   workflow_dispatch:
@@ -137,10 +137,6 @@ jobs:
 
           #ifndef ESP_LCD_TOUCH_IO_I2C_CST816S_ADDRESS
           #define ESP_LCD_TOUCH_IO_I2C_CST816S_ADDRESS 0x15
-          #endif
-
-          #ifndef ADC_ATTEN_DB_12
-          #define ADC_ATTEN_DB_12 ADC_ATTEN_DB_11
           #endif
 
           #define TAG "TrokoWaveshare"
