@@ -1,4 +1,4 @@
-name: Compilar Bitbot EMO Stackchan Firmware
+name: Compilar Troko Next-Gen Tactil
 
 on:
   workflow_dispatch:
@@ -15,7 +15,7 @@ jobs:
           git config --global --add safe.directory "*"
           git clone --depth 1 https://github.com/78/xiaozhi-esp32.git repo
 
-      - name: Configurar pines, tactil CST816D y ojos vectoriales estilo EMO
+      - name: Configurar pines, tactil CST816D y carrusel de 4 pantallas
         shell: bash
         run: |
           rm -f repo/main/boards/wk-esp32s3-dev/wk_board.cc
@@ -62,16 +62,13 @@ jobs:
           #define TOUCH_INT_PIN           GPIO_NUM_46
           #define TOUCH_RST_PIN           GPIO_NUM_NC
 
-          // Bateria ADC (GPIO 5, divisor 200k/100k)
-          #define BATTERY_ADC_PIN         GPIO_NUM_5
-
-          // Orientacion Vertical Rostro Completo (240x320 - USB Abajo)
+          // Orientacion Horizontal (Panoramico 320x240 - USB Derecha)
           #define LCD_TYPE_ST7789_SERIAL
-          #define DISPLAY_WIDTH           240
-          #define DISPLAY_HEIGHT          320
+          #define DISPLAY_WIDTH           320
+          #define DISPLAY_HEIGHT          240
           #define DISPLAY_MIRROR_X        false
-          #define DISPLAY_MIRROR_Y        false
-          #define DISPLAY_SWAP_XY         false
+          #define DISPLAY_MIRROR_Y        true
+          #define DISPLAY_SWAP_XY         true
           #define DISPLAY_INVERT_COLOR    true
           #define DISPLAY_RGB_ORDER       LCD_RGB_ELEMENT_ORDER_RGB
           #define DISPLAY_OFFSET_X        0
@@ -98,8 +95,7 @@ jobs:
                           "CONFIG_WK_ESP32S3_DEV_DISPLAY_LCD=y",
                           "CONFIG_LCD_ST7789_240X320=y",
                           "CONFIG_BOARD_NO_MOTOR_CONTROL=y",
-                          "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y",
-                          "CONFIG_OTA_URL=\"http://192.168.0.50:8000/xiaozhi/ota/\""
+                          "CONFIG_ESPTOOLPY_FLASHSIZE_16MB=y"
                       ]
                   }
               ]
@@ -133,402 +129,343 @@ jobs:
           #include <sys/time.h>
           #include <string>
           #include <cmath>
+
+          #include <esp_adc/adc_oneshot.h>
+          #include <esp_adc/adc_cali.h>
+          #include <esp_adc/adc_cali_scheme.h>
           #include <esp_timer.h>
-          #include <esp_random.h>
-          #include <esp_netif.h>
-          #include <esp_event.h>
-          #include <lwip/ip_addr.h>
-          #include <lwip/dns.h>
-          #include "adc_battery_monitor.h"
 
           #ifndef ESP_LCD_TOUCH_IO_I2C_CST816S_ADDRESS
           #define ESP_LCD_TOUCH_IO_I2C_CST816S_ADDRESS 0x15
           #endif
 
-          #define TAG "BitbotDev"
+          #ifndef ADC_ATTEN_DB_12
+          #define ADC_ATTEN_DB_12 ADC_ATTEN_DB_11
+          #endif
+
+          #define TAG "TrokoWaveshare"
 
           LV_FONT_DECLARE(BUILTIN_TEXT_FONT);
 
-          class BitbotDisplay : public SpiLcdDisplay {
+          /**
+           * TrokoDisplay: Pantalla única dedicada al rostro interactivo y reactivo de Troko.
+           * Sin páginas accesorias (sin carrusel, sin reloj grande, sin pomodoro, sin listas de tareas).
+           * La pantalla es 100% Troko con expresiones animadas, sincronización labial y widget discreto de batería.
+           */
+          class TrokoDisplay : public SpiLcdDisplay {
           private:
-              struct EyeState {
-                  float w;
-                  float h;
-                  float x;
-                  float y;
-                  float radius;
-                  float top_lid_h;
-                  float bot_lid_h;
-                  uint32_t color_hex;
-              };
-
-              EyeState cur_l_{62.0f, 78.0f, 0.0f, 0.0f, 28.0f, 0.0f, 0.0f, 0x00E5FF};
-              EyeState cur_r_{62.0f, 78.0f, 0.0f, 0.0f, 28.0f, 0.0f, 0.0f, 0x00E5FF};
-              EyeState tgt_l_{62.0f, 78.0f, 0.0f, 0.0f, 28.0f, 0.0f, 0.0f, 0x00E5FF};
-              EyeState tgt_r_{62.0f, 78.0f, 0.0f, 0.0f, 28.0f, 0.0f, 0.0f, 0x00E5FF};
-
-              static constexpr int DEFAULT_LX = 45;
-              static constexpr int DEFAULT_RX = 133;
-              static constexpr int DEFAULT_EY = 96;
-
-              lv_obj_t* left_eye_ = nullptr;
-              lv_obj_t* right_eye_ = nullptr;
-              lv_obj_t* mouth_ = nullptr;
-
-              lv_timer_t* anim_timer_ = nullptr;
-              lv_timer_t* auto_timer_ = nullptr;
-
-              int64_t last_blink_ms_ = 0;
-              int next_blink_interval_ms_ = 3500;
-              bool is_blinking_ = false;
-              int64_t blink_start_ms_ = 0;
-
-              int64_t last_glance_ms_ = 0;
-              int next_glance_interval_ms_ = 4500;
-
-              std::string current_emotion_ = "neutral";
-              int mouth_state_ = 0;
-
-              void ApplyEmotionInternal(const std::string& emo) {
-                  if (emo == "happy" || emo == "laughing" || emo == "funny" || emo == "joy") {
-                      tgt_l_ = {64.0f, 62.0f, 0.0f, 4.0f, 26.0f, 0.0f, 24.0f, 0x00F5D4};
-                      tgt_r_ = {64.0f, 62.0f, 0.0f, 4.0f, 26.0f, 0.0f, 24.0f, 0x00F5D4};
-                  } else if (emo == "sad" || emo == "crying") {
-                      tgt_l_ = {58.0f, 66.0f, 0.0f, 10.0f, 24.0f, 20.0f, 0.0f, 0x3A86FF};
-                      tgt_r_ = {58.0f, 66.0f, 0.0f, 10.0f, 24.0f, 20.0f, 0.0f, 0x3A86FF};
-                  } else if (emo == "angry") {
-                      tgt_l_ = {64.0f, 68.0f, 4.0f, 0.0f, 20.0f, 26.0f, 0.0f, 0xFF2A55};
-                      tgt_r_ = {64.0f, 68.0f, -4.0f, 0.0f, 20.0f, 26.0f, 0.0f, 0xFF2A55};
-                  } else if (emo == "shocked" || emo == "surprised") {
-                      tgt_l_ = {70.0f, 92.0f, 0.0f, -4.0f, 34.0f, 0.0f, 0.0f, 0xFFFFFF};
-                      tgt_r_ = {70.0f, 92.0f, 0.0f, -4.0f, 34.0f, 0.0f, 0.0f, 0xFFFFFF};
-                  } else if (emo == "thinking" || emo == "confused") {
-                      tgt_l_ = {64.0f, 82.0f, 14.0f, -8.0f, 28.0f, 0.0f, 0.0f, 0xFFD124};
-                      tgt_r_ = {56.0f, 60.0f, 14.0f, 4.0f, 22.0f, 12.0f, 0.0f, 0xFFD124};
-                  } else if (emo == "sleepy" || emo == "relaxed") {
-                      tgt_l_ = {60.0f, 32.0f, 0.0f, 8.0f, 16.0f, 8.0f, 0.0f, 0x4361EE};
-                      tgt_r_ = {60.0f, 32.0f, 0.0f, 8.0f, 16.0f, 8.0f, 0.0f, 0x4361EE};
-                  } else if (emo == "winking") {
-                      tgt_l_ = {62.0f, 5.0f, 0.0f, 12.0f, 2.0f, 0.0f, 0.0f, 0x00E5FF};
-                      tgt_r_ = {64.0f, 60.0f, 0.0f, 4.0f, 26.0f, 0.0f, 22.0f, 0x00E5FF};
-                  } else if (emo == "loving" || emo == "kissy") {
-                      tgt_l_ = {64.0f, 68.0f, 0.0f, 0.0f, 30.0f, 0.0f, 16.0f, 0xFF43A4};
-                      tgt_r_ = {64.0f, 68.0f, 0.0f, 0.0f, 30.0f, 0.0f, 16.0f, 0xFF43A4};
-                  } else {
-                      tgt_l_ = {62.0f, 78.0f, 0.0f, 0.0f, 28.0f, 0.0f, 0.0f, 0x00E5FF};
-                      tgt_r_ = {62.0f, 78.0f, 0.0f, 0.0f, 28.0f, 0.0f, 0.0f, 0x00E5FF};
-                  }
-              }
-
-              static void OnAnimTimer(lv_timer_t* t) {
-                  auto self = static_cast<BitbotDisplay*>(lv_timer_get_user_data(t));
-                  const float k = 0.25f;
-
-                  self->cur_l_.w += (self->tgt_l_.w - self->cur_l_.w) * k;
-                  self->cur_l_.h += (self->tgt_l_.h - self->cur_l_.h) * k;
-                  self->cur_l_.x += (self->tgt_l_.x - self->cur_l_.x) * k;
-                  self->cur_l_.y += (self->tgt_l_.y - self->cur_l_.y) * k;
-                  self->cur_l_.radius += (self->tgt_l_.radius - self->cur_l_.radius) * k;
-                  self->cur_l_.top_lid_h += (self->tgt_l_.top_lid_h - self->cur_l_.top_lid_h) * k;
-                  self->cur_l_.bot_lid_h += (self->tgt_l_.bot_lid_h - self->cur_l_.bot_lid_h) * k;
-
-                  self->cur_r_.w += (self->tgt_r_.w - self->cur_r_.w) * k;
-                  self->cur_r_.h += (self->tgt_r_.h - self->cur_r_.h) * k;
-                  self->cur_r_.x += (self->tgt_r_.x - self->cur_r_.x) * k;
-                  self->cur_r_.y += (self->tgt_r_.y - self->cur_r_.y) * k;
-                  self->cur_r_.radius += (self->tgt_r_.radius - self->cur_r_.radius) * k;
-                  self->cur_r_.top_lid_h += (self->tgt_r_.top_lid_h - self->cur_r_.top_lid_h) * k;
-                  self->cur_r_.bot_lid_h += (self->tgt_r_.bot_lid_h - self->cur_r_.bot_lid_h) * k;
-
-                  if (self->left_eye_) {
-                      int lx = (int)(DEFAULT_LX + self->cur_l_.x - (self->cur_l_.w - 62.0f) * 0.5f);
-                      int ly = (int)(DEFAULT_EY + self->cur_l_.y - (self->cur_l_.h - 78.0f) * 0.5f);
-                      lv_obj_set_pos(self->left_eye_, lx, ly);
-                      lv_obj_set_size(self->left_eye_, (int)self->cur_l_.w, (int)self->cur_l_.h);
-                      lv_obj_set_style_radius(self->left_eye_, (int)self->cur_l_.radius, 0);
-                      lv_obj_set_style_bg_color(self->left_eye_, lv_color_hex(self->tgt_l_.color_hex), 0);
-                  }
-                  if (self->right_eye_) {
-                      int rx = (int)(DEFAULT_RX + self->cur_r_.x - (self->cur_r_.w - 62.0f) * 0.5f);
-                      int ry = (int)(DEFAULT_EY + self->cur_r_.y - (self->cur_r_.h - 78.0f) * 0.5f);
-                      lv_obj_set_pos(self->right_eye_, rx, ry);
-                      lv_obj_set_size(self->right_eye_, (int)self->cur_r_.w, (int)self->cur_r_.h);
-                      lv_obj_set_style_radius(self->right_eye_, (int)self->cur_r_.radius, 0);
-                      lv_obj_set_style_bg_color(self->right_eye_, lv_color_hex(self->tgt_r_.color_hex), 0);
-                  }
-              }
-
-              static void OnAutonomousTimer(lv_timer_t* t) {
-                  auto self = static_cast<BitbotDisplay*>(lv_timer_get_user_data(t));
-                  int64_t now_ms = esp_timer_get_time() / 1000;
-                  auto& app = Application::GetInstance();
-                  auto state = app.GetDeviceState();
-
-                  // 1. Natural Blinking
-                  if (!self->is_blinking_ && self->current_emotion_ != "sleepy" && self->current_emotion_ != "winking") {
-                      if (now_ms - self->last_blink_ms_ > self->next_blink_interval_ms_) {
-                          self->is_blinking_ = true;
-                          self->blink_start_ms_ = now_ms;
-                          self->tgt_l_.h = 4.0f;
-                          self->tgt_r_.h = 4.0f;
-                          self->tgt_l_.radius = 2.0f;
-                          self->tgt_r_.radius = 2.0f;
-                      }
-                  } else if (self->is_blinking_) {
-                      if (now_ms - self->blink_start_ms_ > 140) {
-                          self->is_blinking_ = false;
-                          self->last_blink_ms_ = now_ms;
-                          self->next_blink_interval_ms_ = 2800 + (esp_random() % 3000);
-                          self->ApplyEmotionInternal(self->current_emotion_);
-                      }
-                  }
-
-                  // 2. Natural Saccades (looking around)
-                  if (state == kDeviceStateIdle && !self->is_blinking_ && self->current_emotion_ == "neutral") {
-                      if (now_ms - self->last_glance_ms_ > self->next_glance_interval_ms_) {
-                          self->last_glance_ms_ = now_ms;
-                          self->next_glance_interval_ms_ = 3200 + (esp_random() % 3500);
-                          int r = esp_random() % 5;
-                          if (r == 0) {
-                              self->tgt_l_.x = -16.0f; self->tgt_r_.x = -16.0f;
-                              self->tgt_l_.y = 0.0f;   self->tgt_r_.y = 0.0f;
-                          } else if (r == 1) {
-                              self->tgt_l_.x = 16.0f;  self->tgt_r_.x = 16.0f;
-                              self->tgt_l_.y = 0.0f;   self->tgt_r_.y = 0.0f;
-                          } else if (r == 2) {
-                              self->tgt_l_.x = 0.0f;   self->tgt_r_.x = 0.0f;
-                              self->tgt_l_.y = -10.0f; self->tgt_r_.y = -10.0f;
-                          } else {
-                              self->tgt_l_.x = 0.0f;   self->tgt_r_.x = 0.0f;
-                              self->tgt_l_.y = 0.0f;   self->tgt_r_.y = 0.0f;
-                          }
-                      }
-                  }
-
-                  // 3. Mouth & Lip-sync
-                  if (self->mouth_) {
-                      if (state == kDeviceStateSpeaking) {
-                          self->mouth_state_ = (self->mouth_state_ + 1) % 4;
-                          int heights[] = {8, 22, 12, 26};
-                          int widths[]  = {48, 40, 56, 44};
-                          lv_obj_set_size(self->mouth_, widths[self->mouth_state_], heights[self->mouth_state_]);
-                          lv_obj_set_style_bg_color(self->mouth_, lv_color_hex(self->tgt_l_.color_hex), 0);
-                      } else if (state == kDeviceStateListening) {
-                          lv_obj_set_size(self->mouth_, 52, 10);
-                          lv_obj_set_style_bg_color(self->mouth_, lv_color_hex(self->tgt_l_.color_hex), 0);
-                      } else {
-                          lv_obj_set_size(self->mouth_, 44, 8);
-                          lv_obj_set_style_bg_color(self->mouth_, lv_color_hex(self->tgt_l_.color_hex), 0);
-                      }
-                  }
-              }
+              lv_obj_t* battery_label_ = nullptr;
+              lv_timer_t* tick_timer_ = nullptr;
+              lv_timer_t* single_tap_timer_ = nullptr;
+              int64_t last_tap_time_ms_ = 0;
 
           public:
-              BitbotDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
-                            int width, int height, int offset_x, int offset_y,
-                            bool mirror_x, bool mirror_y, bool swap_xy)
+              TrokoDisplay(esp_lcd_panel_io_handle_t panel_io, esp_lcd_panel_handle_t panel,
+                           int width, int height, int offset_x, int offset_y,
+                           bool mirror_x, bool mirror_y, bool swap_xy)
                   : SpiLcdDisplay(panel_io, panel, width, height, offset_x, offset_y, mirror_x, mirror_y, swap_xy) {}
-
-              virtual bool SetEmotion(const char* emotion) override {
-                  if (!emotion) return false;
-                  DisplayLockGuard lock(this);
-                  current_emotion_ = emotion;
-                  ApplyEmotionInternal(emotion);
-                  return true;
-              }
 
               virtual void SetupUI() override {
                   SpiLcdDisplay::SetupUI();
 
                   DisplayLockGuard lock(this);
                   auto screen = lv_screen_active();
-                  lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
-                  lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-                  // Eliminar por completo bordes, lineas divisorias y barras clasicas de Xiaozhi
-                  if (status_bar_) {
-                      lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
-                      lv_obj_set_size(status_bar_, 0, 0);
-                      lv_obj_set_style_border_width(status_bar_, 0, 0);
-                      lv_obj_set_style_outline_width(status_bar_, 0, 0);
-                      lv_obj_set_style_pad_all(status_bar_, 0, 0);
-                  }
-                  if (chat_message_label_) {
-                      lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
-                      lv_obj_set_size(chat_message_label_, 0, 0);
-                  }
-                  if (emoji_box_) {
-                      lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
-                      lv_obj_set_size(emoji_box_, 0, 0);
-                  }
-                  if (emoji_image_) lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
-                  if (emoji_label_) lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
-                  if (container_) {
-                      lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
-                      lv_obj_set_size(container_, 0, 0);
-                      lv_obj_set_style_border_width(container_, 0, 0);
-                      lv_obj_set_style_outline_width(container_, 0, 0);
-                  }
-                  if (content_) {
-                      lv_obj_add_flag(content_, LV_OBJ_FLAG_HIDDEN);
-                      lv_obj_set_size(content_, 0, 0);
-                      lv_obj_set_style_border_width(content_, 0, 0);
-                      lv_obj_set_style_outline_width(content_, 0, 0);
-                  }
+                  // 1. Indicador discreto de Batería en la esquina superior derecha
+                  battery_label_ = lv_label_create(screen);
+                  lv_label_set_text(battery_label_, "🔋 --%");
+                  lv_obj_set_style_text_color(battery_label_, lv_color_hex(0xb5ff43), 0);
+                  lv_obj_align(battery_label_, LV_ALIGN_TOP_RIGHT, -10, 6);
+                  lv_obj_add_flag(battery_label_, LV_OBJ_FLAG_IGNORE_LAYOUT);
 
-                  // Ojo Izquierdo Vectorial EMO (Limpio, sin parches ni lineas de parpado)
-                  left_eye_ = lv_obj_create(screen);
-                  lv_obj_remove_flag(left_eye_, LV_OBJ_FLAG_CLICKABLE);
-                  lv_obj_remove_flag(left_eye_, LV_OBJ_FLAG_SCROLLABLE);
-                  lv_obj_add_flag(left_eye_, LV_OBJ_FLAG_EVENT_BUBBLE);
-                  lv_obj_set_style_border_width(left_eye_, 0, 0);
-                  lv_obj_set_style_outline_width(left_eye_, 0, 0);
-                  lv_obj_set_style_pad_all(left_eye_, 0, 0);
-                  lv_obj_set_style_bg_color(left_eye_, lv_color_hex(0x00E5FF), 0);
-                  lv_obj_set_style_radius(left_eye_, 28, 0);
-                  lv_obj_set_size(left_eye_, 62, 78);
-                  lv_obj_set_pos(left_eye_, DEFAULT_LX, DEFAULT_EY);
-
-                  // Ojo Derecho Vectorial EMO (Limpio, sin parches ni lineas de parpado)
-                  right_eye_ = lv_obj_create(screen);
-                  lv_obj_remove_flag(right_eye_, LV_OBJ_FLAG_CLICKABLE);
-                  lv_obj_remove_flag(right_eye_, LV_OBJ_FLAG_SCROLLABLE);
-                  lv_obj_add_flag(right_eye_, LV_OBJ_FLAG_EVENT_BUBBLE);
-                  lv_obj_set_style_border_width(right_eye_, 0, 0);
-                  lv_obj_set_style_outline_width(right_eye_, 0, 0);
-                  lv_obj_set_style_pad_all(right_eye_, 0, 0);
-                  lv_obj_set_style_bg_color(right_eye_, lv_color_hex(0x00E5FF), 0);
-                  lv_obj_set_style_radius(right_eye_, 28, 0);
-                  lv_obj_set_size(right_eye_, 62, 78);
-                  lv_obj_set_pos(right_eye_, DEFAULT_RX, DEFAULT_EY);
-
-                  // Boca Vectorial
-                  mouth_ = lv_obj_create(screen);
-                  lv_obj_remove_flag(mouth_, LV_OBJ_FLAG_CLICKABLE);
-                  lv_obj_remove_flag(mouth_, LV_OBJ_FLAG_SCROLLABLE);
-                  lv_obj_add_flag(mouth_, LV_OBJ_FLAG_EVENT_BUBBLE);
-                  lv_obj_set_size(mouth_, 44, 8);
-                  lv_obj_align(mouth_, LV_ALIGN_BOTTOM_MID, 0, -48);
-                  lv_obj_set_style_bg_color(mouth_, lv_color_hex(0x00E5FF), 0);
-                  lv_obj_set_style_border_width(mouth_, 0, 0);
-                  lv_obj_set_style_pad_all(mouth_, 0, 0);
-                  lv_obj_set_style_radius(mouth_, LV_RADIUS_CIRCLE, 0);
-
-                  // Interaccion tactil en pantalla completa: entrar en modo escucha
+                  // 2. Hacer la pantalla completamente táctil para interactuar con Troko
                   lv_obj_add_flag(screen, LV_OBJ_FLAG_CLICKABLE);
-                  lv_obj_add_event_cb(screen, [](lv_event_t* e) {
-                      auto& app = Application::GetInstance();
-                      app.ToggleChatState();
-                  }, LV_EVENT_CLICKED, nullptr);
+                  if (container_ != nullptr) {
+                      lv_obj_add_flag(container_, LV_OBJ_FLAG_CLICKABLE);
+                      lv_obj_add_flag(container_, LV_OBJ_FLAG_EVENT_BUBBLE);
+                  }
+                  if (content_ != nullptr) {
+                      lv_obj_add_flag(content_, LV_OBJ_FLAG_EVENT_BUBBLE);
+                  }
+                  if (emoji_box_ != nullptr) {
+                      lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_EVENT_BUBBLE);
+                  }
+                  if (emoji_image_ != nullptr) {
+                      lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_CLICKABLE);
+                      lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_EVENT_BUBBLE);
+                  }
 
-                  // Iniciar motores de animacion fluida a 33 FPS y comportamientos
-                  anim_timer_ = lv_timer_create(OnAnimTimer, 30, this);
-                  auto_timer_ = lv_timer_create(OnAutonomousTimer, 80, this);
+                  // 3. Manejador de eventos táctiles:
+                  //    - Toque simple: conmutar escucha (hablar o interrumpir)
+                  //    - Doble toque rápido: guiño simpático
+                  lv_obj_add_event_cb(screen, [](lv_event_t* e) {
+                      auto self = static_cast<TrokoDisplay*>(lv_event_get_user_data(e));
+                      lv_event_code_t code = lv_event_get_code(e);
+
+                      if (code == LV_EVENT_CLICKED) {
+                          int64_t now_ms = esp_timer_get_time() / 1000;
+                          int64_t interval = now_ms - self->last_tap_time_ms_;
+                          self->last_tap_time_ms_ = now_ms;
+
+                          if (interval > 50 && interval < 380) {
+                              // Doble toque rápido: Guiño de complicidad
+                              if (self->single_tap_timer_) {
+                                  lv_timer_delete(self->single_tap_timer_);
+                                  self->single_tap_timer_ = nullptr;
+                              }
+                              self->SetEmotion("winking");
+                          } else {
+                              // Toque simple: esperar 350 ms y conmutar diálogo
+                              if (self->single_tap_timer_) {
+                                  lv_timer_delete(self->single_tap_timer_);
+                                  self->single_tap_timer_ = nullptr;
+                              }
+                              self->single_tap_timer_ = lv_timer_create([](lv_timer_t* t) {
+                                  auto self = static_cast<TrokoDisplay*>(lv_timer_get_user_data(t));
+                                  lv_timer_delete(t);
+                                  self->single_tap_timer_ = nullptr;
+                                  auto& app = Application::GetInstance();
+                                  app.ToggleChatState();
+                              }, 350, self);
+                          }
+                      }
+                  }, LV_EVENT_ALL, this);
+
+                  // 4. Timer periódico de actualización de batería cada segundo
+                  tick_timer_ = lv_timer_create([](lv_timer_t* t) {
+                      auto self = static_cast<TrokoDisplay*>(lv_timer_get_user_data(t));
+                      self->OnTimerTick();
+                  }, 1000, this);
+              }
+
+              void OnTimerTick() {
+                  int level = 100;
+                  bool charging = false, discharging = false;
+                  if (Board::GetInstance().GetBatteryLevel(level, charging, discharging)) {
+                      char b_str[32];
+                      if (charging) {
+                          snprintf(b_str, sizeof(b_str), "⚡ %d%%", level);
+                          if (battery_label_) lv_obj_set_style_text_color(battery_label_, lv_color_hex(0xffcc00), 0);
+                      } else if (level <= 20) {
+                          snprintf(b_str, sizeof(b_str), "🪫 %d%%", level);
+                          if (battery_label_) lv_obj_set_style_text_color(battery_label_, lv_color_hex(0xff4444), 0);
+                      } else {
+                          snprintf(b_str, sizeof(b_str), "🔋 %d%%", level);
+                          if (battery_label_) lv_obj_set_style_text_color(battery_label_, lv_color_hex(0xb5ff43), 0);
+                      }
+                      if (battery_label_) lv_label_set_text(battery_label_, b_str);
+                  }
               }
           };
 
+          /**
+           * WkEsp32s3Dev: Implementación de la placa Waveshare ESP32-S3-Touch-LCD-2
+           */
           class WkEsp32s3Dev : public WifiBoard {
           private:
               Button boot_button_;
               Display* display_ = nullptr;
               i2c_master_bus_handle_t i2c_bus_ = nullptr;
+              i2c_master_dev_handle_t qmi_dev_ = nullptr;
+              bool qmi_initialized_ = false;
               esp_lcd_panel_io_handle_t panel_io_ = nullptr;
               esp_lcd_panel_handle_t panel_ = nullptr;
               lv_indev_t* touch_indev_ = nullptr;
               Button volume_up_button_;
               Button volume_down_button_;
 
-              AdcBatteryMonitor* adc_battery_monitor_ = nullptr;
-              i2c_master_dev_handle_t qmi_dev_ = nullptr;
-              bool qmi_initialized_ = false;
-              bool privacy_mode_active_ = false;
-              int64_t last_shake_time_ms_ = 0;
+              // Telemetría ADC de Batería (GPIO 5, divisor 200k/100k)
+              adc_oneshot_unit_handle_t adc1_handle_ = nullptr;
+              adc_cali_handle_t adc_cali_handle_ = nullptr;
+              bool adc_cali_enabled_ = false;
 
-              void InitializeBattery() {
-                  adc_battery_monitor_ = new AdcBatteryMonitor(ADC_UNIT_1, ADC_CHANNEL_4, 200000.0f, 100000.0f, GPIO_NUM_NC);
-                  ESP_LOGI(TAG, "AdcBatteryMonitor inicializado en GPIO 5");
+              // Control de IMU y Estados
+              int64_t last_shake_time_ms_ = 0;
+              bool privacy_mode_active_ = false;
+
+              void InitializeBatteryAdc() {
+                  adc_oneshot_unit_init_cfg_t init_config1 = {
+                      .unit_id = ADC_UNIT_1,
+                      .ulp_mode = ADC_ULP_MODE_DISABLE,
+                  };
+                  ESP_ERROR_CHECK(adc_oneshot_new_unit(&init_config1, &adc1_handle_));
+
+                  adc_oneshot_chan_cfg_t config = {
+                      .atten = ADC_ATTEN_DB_12,
+                      .bitwidth = ADC_BITWIDTH_DEFAULT,
+                  };
+                  // GPIO 5 = ADC1 Channel 4
+                  ESP_ERROR_CHECK(adc_oneshot_config_channel(adc1_handle_, ADC_CHANNEL_4, &config));
+
+                  adc_cali_curve_fitting_config_t cali_config = {
+                      .unit_id = ADC_UNIT_1,
+                      .chan = ADC_CHANNEL_4,
+                      .atten = ADC_ATTEN_DB_12,
+                      .bitwidth = ADC_BITWIDTH_DEFAULT,
+                  };
+                  if (adc_cali_create_scheme_curve_fitting(&cali_config, &adc_cali_handle_) == ESP_OK) {
+                      adc_cali_enabled_ = true;
+                      ESP_LOGI(TAG, "ADC Bateria calibrado con exito");
+                  } else {
+                      ESP_LOGW(TAG, "Calibracion ADC curve-fitting no disponible, usando lineal");
+                  }
+              }
+
+              int ReadBatteryVoltageMv() {
+                  if (!adc1_handle_) return 0;
+                  int raw = 0;
+                  int sum_raw = 0;
+                  for (int i = 0; i < 8; i++) {
+                      adc_oneshot_read(adc1_handle_, ADC_CHANNEL_4, &raw);
+                      sum_raw += raw;
+                  }
+                  int avg_raw = sum_raw / 8;
+                  int voltage_mv = 0;
+                  if (adc_cali_enabled_ && adc_cali_handle_) {
+                      adc_cali_raw_to_voltage(adc_cali_handle_, avg_raw, &voltage_mv);
+                  } else {
+                      voltage_mv = (avg_raw * 3100) / 4095;
+                  }
+                  // Multiplicador 3.0 por divisor R19=200k, R20=100k
+                  return voltage_mv * 3;
+              }
+
+              int CalculateBatteryPercentage(int vbat_mv) {
+                  if (vbat_mv >= 4180) return 100;
+                  if (vbat_mv <= 3300) return 0;
+                  struct VoltPct { int mv; int pct; };
+                  static const VoltPct curve[] = {
+                      {4180, 100}, {4050, 90}, {3950, 80}, {3850, 70},
+                      {3780, 60}, {3730, 50}, {3680, 40}, {3630, 30},
+                      {3580, 20}, {3500, 10}, {3300, 0}
+                  };
+                  for (size_t i = 0; i < sizeof(curve)/sizeof(curve[0]) - 1; i++) {
+                      if (vbat_mv >= curve[i+1].mv) {
+                          int span_mv = curve[i].mv - curve[i+1].mv;
+                          int span_pct = curve[i].pct - curve[i+1].pct;
+                          int offset = vbat_mv - curve[i+1].mv;
+                          return curve[i+1].pct + (offset * span_pct) / span_mv;
+                      }
+                  }
+                  return 0;
               }
 
               void InitializeQmi8658() {
                   if (!i2c_bus_) return;
+
                   i2c_device_config_t dev_cfg = {
                       .dev_addr_length = I2C_ADDR_BIT_LEN_7,
                       .device_address = 0x6B,
                       .scl_speed_hz = 100000,
                   };
                   esp_err_t err = i2c_master_bus_add_device(i2c_bus_, &dev_cfg, &qmi_dev_);
-                  if (err != ESP_OK) return;
+                  if (err != ESP_OK) {
+                      ESP_LOGW(TAG, "QMI8658 add device failed: %s", esp_err_to_name(err));
+                      return;
+                  }
 
-                  uint8_t reg_who = 0x00, who_val = 0;
+                  uint8_t reg_who = 0x00;
+                  uint8_t who_val = 0;
                   err = i2c_master_transmit_receive(qmi_dev_, &reg_who, 1, &who_val, 1, 100);
                   if (err != ESP_OK || who_val != 0x05) {
                       i2c_master_bus_rm_device(qmi_dev_);
                       dev_cfg.device_address = 0x6A;
                       if (i2c_master_bus_add_device(i2c_bus_, &dev_cfg, &qmi_dev_) == ESP_OK) {
-                          i2c_master_transmit_receive(qmi_dev_, &reg_who, 1, &who_val, 1, 100);
+                          err = i2c_master_transmit_receive(qmi_dev_, &reg_who, 1, &who_val, 1, 100);
                       }
                   }
-                  if (who_val == 0x05) {
-                      uint8_t c1[2] = {0x02, 0x60}, c2[2] = {0x03, 0x23}, c3[2] = {0x04, 0x43}, c7[2] = {0x08, 0x03};
+
+                  if (err == ESP_OK && who_val == 0x05) {
+                      ESP_LOGI(TAG, "QMI8658 detectado (whoami = 0x%02x)", who_val);
+                      uint8_t c1[2] = {0x02, 0x60}; // CTRL1: auto-increment
                       i2c_master_transmit(qmi_dev_, c1, 2, 100);
+                      uint8_t c2[2] = {0x03, 0x23}; // CTRL2: Acc +/- 4g, 100Hz
                       i2c_master_transmit(qmi_dev_, c2, 2, 100);
+                      uint8_t c3[2] = {0x04, 0x43}; // CTRL3: Gyro +/- 512dps, 100Hz
                       i2c_master_transmit(qmi_dev_, c3, 2, 100);
+                      uint8_t c7[2] = {0x08, 0x03}; // CTRL7: Enable Acc & Gyro
                       i2c_master_transmit(qmi_dev_, c7, 2, 100);
                       qmi_initialized_ = true;
-                      ESP_LOGI(TAG, "QMI8658 detectado exitosamente!");
+                  } else {
+                      ESP_LOGW(TAG, "QMI8658 IMU no responde, continuando sin sensor de movimiento.");
                   }
               }
 
               bool ReadImu(float &ax, float &ay, float &az) {
                   if (!qmi_initialized_ || !qmi_dev_) return false;
-                  uint8_t reg = 0x35, buf[6] = {0};
-                  if (i2c_master_transmit_receive(qmi_dev_, &reg, 1, buf, 6, 50) != ESP_OK) return false;
-                  ax = (int16_t)(buf[1] << 8 | buf[0]) / 4096.0f;
-                  ay = (int16_t)(buf[3] << 8 | buf[2]) / 4096.0f;
-                  az = (int16_t)(buf[5] << 8 | buf[4]) / 4096.0f;
+                  uint8_t reg = 0x35;
+                  uint8_t buf[6] = {0};
+                  esp_err_t err = i2c_master_transmit_receive(qmi_dev_, &reg, 1, buf, 6, 50);
+                  if (err != ESP_OK) return false;
+
+                  int16_t rx = (int16_t)(buf[1] << 8 | buf[0]);
+                  int16_t ry = (int16_t)(buf[3] << 8 | buf[2]);
+                  int16_t rz = (int16_t)(buf[5] << 8 | buf[4]);
+
+                  ax = rx / 4096.0f;
+                  ay = ry / 4096.0f;
+                  az = rz / 4096.0f;
                   return true;
               }
 
               void StartImuTask() {
                   if (!qmi_initialized_) return;
+
                   xTaskCreate([](void* arg) {
                       auto self = static_cast<WkEsp32s3Dev*>(arg);
-                      int face_down_count = 0, upright_count = 0;
+                      int face_down_count = 0;
+                      int upright_count = 0;
+
                       while (true) {
                           vTaskDelay(pdMS_TO_TICKS(100));
+
                           float ax = 0, ay = 0, az = 0;
                           if (!self->ReadImu(ax, ay, az)) continue;
+
                           float mag = std::sqrt(ax * ax + ay * ay + az * az);
                           int64_t now_ms = esp_timer_get_time() / 1000;
+
+                          // 1. Detección de sacudida (Mareo / Confusión)
                           if (mag > 1.85f || (mag < 0.25f && mag > 0.01f)) {
                               if (now_ms - self->last_shake_time_ms_ > 4000) {
                                   self->last_shake_time_ms_ = now_ms;
-                                  if (self->display_) self->display_->SetEmotion("confused");
+                                  ESP_LOGI(TAG, "Troko sacudido! Activando mareo.");
+                                  if (self->display_) {
+                                      self->display_->SetEmotion("confused");
+                                  }
                               }
                           }
-                          if (az > 0.70f) {
-                              face_down_count++; upright_count = 0;
+
+                          // 2. Modo Privacidad (Boca abajo -> apagar pantalla)
+                          if (az < -0.75f) {
+                              face_down_count++;
+                              upright_count = 0;
                               if (face_down_count >= 4 && !self->privacy_mode_active_) {
                                   self->privacy_mode_active_ = true;
-                                  auto& app = Application::GetInstance();
-                                  app.Schedule([&app]() {
-                                      app.AbortSpeaking(kAbortReasonNone);
-                                  });
-                                  if (self->display_) self->display_->SetEmotion("sleepy");
-                                  if (self->GetBacklight()) self->GetBacklight()->SetBrightness(0);
+                                  ESP_LOGI(TAG, "Modo Privacidad Activado (Boca Abajo)");
+                                  if (self->GetBacklight()) {
+                                      self->GetBacklight()->SetBrightness(0);
+                                  }
                               }
-                          } else if (az < 0.35f) {
-                              upright_count++; face_down_count = 0;
+                          } else if (az > 0.35f) {
+                              upright_count++;
+                              face_down_count = 0;
                               if (upright_count >= 3 && self->privacy_mode_active_) {
                                   self->privacy_mode_active_ = false;
-                                  if (self->GetBacklight()) self->GetBacklight()->RestoreBrightness();
-                                  if (self->display_) self->display_->SetEmotion("happy");
+                                  ESP_LOGI(TAG, "Modo Privacidad Desactivado (De pie)");
+                                  if (self->GetBacklight()) {
+                                      self->GetBacklight()->RestoreBrightness();
+                                  }
+                                  if (self->display_) {
+                                      self->display_->SetEmotion("happy");
+                                  }
                               }
                           } else {
-                              face_down_count = 0; upright_count = 0;
+                              face_down_count = 0;
+                              upright_count = 0;
                           }
                       }
-                  }, "bitbot_imu", 3072, this, 1, nullptr);
+                  }, "troko_imu", 3072, this, 1, nullptr);
               }
 
               void InitializeI2c() {
@@ -546,9 +483,9 @@ jobs:
                   };
                   esp_err_t err = i2c_new_master_bus(&i2c_bus_cfg, &i2c_bus_);
                   if (err != ESP_OK) {
-                      ESP_LOGE(TAG, "Failed to create I2C bus: %s", esp_err_to_name(err));
+                      ESP_LOGE(TAG, "Fallo al inicializar bus I2C: %s", esp_err_to_name(err));
                   } else {
-                      ESP_LOGI(TAG, "I2C master bus initialized on SDA 48, SCL 47");
+                      ESP_LOGI(TAG, "Bus I2C inicializado (SDA: 48, SCL: 47)");
                   }
               }
 
@@ -571,7 +508,7 @@ jobs:
 
                   esp_err_t ret = esp_lcd_new_panel_io_i2c(i2c_bus_, &tp_io_config, &tp_io_handle);
                   if (ret != ESP_OK) {
-                      ESP_LOGE(TAG, "Failed to create touch panel IO: %s", esp_err_to_name(ret));
+                      ESP_LOGE(TAG, "Fallo al crear panel IO táctil: %s", esp_err_to_name(ret));
                       return;
                   }
 
@@ -581,22 +518,22 @@ jobs:
                       .rst_gpio_num = GPIO_NUM_NC,
                       .int_gpio_num = TOUCH_INT_PIN,
                       .flags = {
-                          .swap_xy = 0,
+                          .swap_xy = 1,
                           .mirror_x = 0,
-                          .mirror_y = 0,
+                          .mirror_y = 1,
                       },
                   };
-                  ESP_LOGI(TAG, "Initializing CST816D touch controller...");
+                  ESP_LOGI(TAG, "Inicializando controlador táctil CST816D...");
                   ret = esp_lcd_touch_new_i2c_cst816s(tp_io_handle, &tp_cfg, &touch_handle);
                   if (ret == ESP_OK) {
                       const lvgl_port_touch_cfg_t touch_cfg = {
-                          .disp = lv_display_get_default(), 
+                          .disp = lv_display_get_default(),
                           .handle = touch_handle,
                       };
                       touch_indev_ = lvgl_port_add_touch(&touch_cfg);
-                      ESP_LOGI(TAG, "CST816D touch initialized and registered with LVGL!");
+                      ESP_LOGI(TAG, "Táctil CST816D listo y registrado en LVGL!");
                   } else {
-                      ESP_LOGE(TAG, "Failed to initialize CST816D: %s", esp_err_to_name(ret));
+                      ESP_LOGE(TAG, "Fallo al inicializar CST816D: %s", esp_err_to_name(ret));
                   }
               }
 
@@ -612,8 +549,6 @@ jobs:
               }
 
               void InitializeLcdDisplay() {
-                  ESP_LOGD(TAG, "Install LCD panel IO");
-
                   esp_lcd_panel_io_spi_config_t io_config = {};
                   io_config.cs_gpio_num = DISPLAY_CS_PIN;
                   io_config.dc_gpio_num = DISPLAY_DC_PIN;
@@ -625,33 +560,30 @@ jobs:
 
                   ESP_ERROR_CHECK(esp_lcd_new_panel_io_spi(SPI3_HOST, &io_config, &panel_io_));
 
-                  ESP_LOGD(TAG, "Install LCD driver");
-
                   esp_lcd_panel_dev_config_t panel_config = {};
                   panel_config.reset_gpio_num = DISPLAY_RST_PIN;
                   panel_config.rgb_ele_order = DISPLAY_RGB_ORDER;
                   panel_config.bits_per_pixel = 16;
 
                   ESP_ERROR_CHECK(esp_lcd_new_panel_st7789(panel_io_, &panel_config, &panel_));
-
                   ESP_ERROR_CHECK(esp_lcd_panel_reset(panel_));
                   ESP_ERROR_CHECK(esp_lcd_panel_init(panel_));
                   ESP_ERROR_CHECK(esp_lcd_panel_invert_color(panel_, DISPLAY_INVERT_COLOR));
                   ESP_ERROR_CHECK(esp_lcd_panel_swap_xy(panel_, DISPLAY_SWAP_XY));
                   ESP_ERROR_CHECK(esp_lcd_panel_mirror(panel_, DISPLAY_MIRROR_X, DISPLAY_MIRROR_Y));
 
-                  display_ = new BitbotDisplay(panel_io_, panel_,
-                                               DISPLAY_WIDTH,
-                                               DISPLAY_HEIGHT,
-                                               DISPLAY_OFFSET_X,
-                                               DISPLAY_OFFSET_Y,
-                                               DISPLAY_MIRROR_X,
-                                               DISPLAY_MIRROR_Y,
-                                               DISPLAY_SWAP_XY);
+                  display_ = new TrokoDisplay(panel_io_, panel_,
+                                              DISPLAY_WIDTH,
+                                              DISPLAY_HEIGHT,
+                                              DISPLAY_OFFSET_X,
+                                              DISPLAY_OFFSET_Y,
+                                              DISPLAY_MIRROR_X,
+                                              DISPLAY_MIRROR_Y,
+                                              DISPLAY_SWAP_XY);
               }
 
               void InitializeButtons() {
-                  boot_button_.OnPressDown([this]() {
+                  boot_button_.OnClick([this]() {
                       auto& app = Application::GetInstance();
                       if (app.GetDeviceState() == kDeviceStateStarting) {
                           EnterWifiConfigMode();
@@ -693,50 +625,23 @@ jobs:
 
           public:
               WkEsp32s3Dev() :
-                  boot_button_(BOOT_BUTTON_GPIO), 
+                  boot_button_(BOOT_BUTTON_GPIO),
                   volume_up_button_(VOLUME_UP_BUTTON_GPIO),
                   volume_down_button_(VOLUME_DOWN_BUTTON_GPIO) {
+
                   InitializeI2c();
                   InitializeQmi8658();
-                  InitializeBattery();
                   InitializeSpi();
                   InitializeLcdDisplay();
                   InitializeTouch();
+                  InitializeBatteryAdc();
+                  StartImuTask();
+
                   if (DISPLAY_BACKLIGHT_PIN != GPIO_NUM_NC) {
                       GetBacklight()->RestoreBrightness();
                   }
                   InitializeButtons();
                   InitializeTools();
-                  StartImuTask();
-
-                  // DNS robusto (8.8.8.8 y 1.1.1.1)
-                  esp_event_handler_register(IP_EVENT, IP_EVENT_STA_GOT_IP, [](void* arg, esp_event_base_t base, int32_t id, void* event_data) {
-                      esp_netif_t* netif = esp_netif_get_handle_from_ifkey("WIFI_STA_DEF");
-                      if (netif) {
-                          esp_netif_dns_info_t dns_main, dns_backup;
-                          dns_main.ip.type = ESP_IPADDR_TYPE_V4;
-                          dns_main.ip.u_addr.ip4.addr = ipaddr_addr("8.8.8.8");
-                          esp_netif_set_dns_info(netif, ESP_NETIF_DNS_MAIN, &dns_main);
-                          dns_backup.ip.type = ESP_IPADDR_TYPE_V4;
-                          dns_backup.ip.u_addr.ip4.addr = ipaddr_addr("1.1.1.1");
-                          esp_netif_set_dns_info(netif, ESP_NETIF_DNS_BACKUP, &dns_backup);
-                      }
-                      ip_addr_t d1, d2;
-                      ipaddr_aton("8.8.8.8", &d1);
-                      dns_setserver(0, &d1);
-                      ipaddr_aton("1.1.1.1", &d2);
-                      dns_setserver(1, &d2);
-                  }, nullptr);
-              }
-
-              virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
-                  if (adc_battery_monitor_ != nullptr) {
-                      charging = adc_battery_monitor_->IsCharging();
-                      discharging = adc_battery_monitor_->IsDischarging();
-                      level = adc_battery_monitor_->GetBatteryLevel();
-                      return true;
-                  }
-                  return false;
               }
 
               virtual Led* GetLed() override {
@@ -747,7 +652,7 @@ jobs:
               virtual AudioCodec* GetAudioCodec() override {
           #ifdef AUDIO_I2S_METHOD_SIMPLEX
                   static NoAudioCodecSimplex audio_codec(AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
-                       AUDIO_I2S_SPK_GPIO_BCLK, AUDIO_I2S_SPK_GPIO_LRCK, AUDIO_I2S_SPK_GPIO_DOUT, I2S_STD_SLOT_RIGHT,
+                      AUDIO_I2S_SPK_GPIO_BCLK, AUDIO_I2S_SPK_GPIO_LRCK, AUDIO_I2S_SPK_GPIO_DOUT, I2S_STD_SLOT_RIGHT,
                       AUDIO_I2S_MIC_GPIO_SCK, AUDIO_I2S_MIC_GPIO_WS, AUDIO_I2S_MIC_GPIO_DIN, I2S_STD_SLOT_LEFT);
           #else
                   static NoAudioCodecDuplex audio_codec(AUDIO_INPUT_SAMPLE_RATE, AUDIO_OUTPUT_SAMPLE_RATE,
@@ -767,39 +672,31 @@ jobs:
                   }
                   return nullptr;
               }
+
+              virtual bool GetBatteryLevel(int &level, bool& charging, bool& discharging) override {
+                  int vbat_mv = ReadBatteryVoltageMv();
+                  if (vbat_mv <= 0) {
+                      return false;
+                  }
+                  level = CalculateBatteryPercentage(vbat_mv);
+                  charging = (vbat_mv > 4250);
+                  discharging = !charging;
+                  return true;
+              }
           };
 
           DECLARE_BOARD(WkEsp32s3Dev);
           EOF
-
-      - name: Desacoplar Tenclass Cloud y forzar servidor local Bitbot (WebSocket & OTA)
-        shell: bash
-        run: |
-          # 1. Asegurar que InitializeProtocol siempre use WebsocketProtocol sin depender de Tenclass MQTT
-          sed -i 's/protocol_ = std::make_unique<MqttProtocol>();/protocol_ = std::make_unique<WebsocketProtocol>();/g' repo/main/application.cc
-
-          # 2. Forzar endpoint WebSocket local limpio con Python (sin problemas de sed)
-          python3 -c "
-          p = 'repo/main/protocols/websocket_protocol.cc'
-          with open(p, 'r') as f: c = f.read()
-          tgt = 'std::string url = settings.GetString(\"url\");'
-          inj = tgt + ' if (url.empty() || url.find(\"tenclass\") != std::string::npos) url = \"ws://192.168.0.50:8000/ws\";'
-          c = c.replace(tgt, inj)
-          with open(p, 'w') as f: f.write(c)
-          "
-
-          # 3. Buffer de audio anti-cortes (360ms)
-          sed -i 's/#define MAX_PLAYBACK_TASKS_IN_QUEUE 2/#define MAX_PLAYBACK_TASKS_IN_QUEUE 6/g' repo/main/audio_service.h repo/main/audio_service.cc 2>/dev/null || true
 
       - name: Compilar Firmware
         shell: bash
         working-directory: repo
         run: |
           source "$IDF_PATH/export.sh"
-          python scripts/build.py wk-esp32s3-dev --name wk-esp32s3-dev --language es-ES --wake-word disabled 2>&1 | tee build.log || (echo "=== LOG COMPILACION ===" && tail -n 80 build.log && exit 1)
+          python scripts/build.py wk-esp32s3-dev --name wk-esp32s3-dev --language es-ES
 
       - name: Subir binario compilado
         uses: actions/upload-artifact@v4
         with:
-          name: bitbot_emo_firmware
+          name: troko_nextgen_touch_firmware
           path: repo/build/merged-binary.bin
