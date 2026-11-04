@@ -173,10 +173,6 @@ jobs:
 
               lv_obj_t* left_eye_ = nullptr;
               lv_obj_t* right_eye_ = nullptr;
-              lv_obj_t* left_top_lid_ = nullptr;
-              lv_obj_t* left_bot_lid_ = nullptr;
-              lv_obj_t* right_top_lid_ = nullptr;
-              lv_obj_t* right_bot_lid_ = nullptr;
               lv_obj_t* mouth_ = nullptr;
 
               lv_timer_t* anim_timer_ = nullptr;
@@ -252,15 +248,6 @@ jobs:
                       lv_obj_set_style_radius(self->left_eye_, (int)self->cur_l_.radius, 0);
                       lv_obj_set_style_bg_color(self->left_eye_, lv_color_hex(self->tgt_l_.color_hex), 0);
                   }
-                  if (self->left_top_lid_) {
-                      lv_obj_set_size(self->left_top_lid_, (int)self->cur_l_.w + 4, (int)self->cur_l_.top_lid_h);
-                      lv_obj_align(self->left_top_lid_, LV_ALIGN_TOP_MID, 0, 0);
-                  }
-                  if (self->left_bot_lid_) {
-                      lv_obj_set_size(self->left_bot_lid_, (int)self->cur_l_.w + 4, (int)self->cur_l_.bot_lid_h);
-                      lv_obj_align(self->left_bot_lid_, LV_ALIGN_BOTTOM_MID, 0, 0);
-                  }
-
                   if (self->right_eye_) {
                       int rx = (int)(DEFAULT_RX + self->cur_r_.x - (self->cur_r_.w - 62.0f) * 0.5f);
                       int ry = (int)(DEFAULT_EY + self->cur_r_.y - (self->cur_r_.h - 78.0f) * 0.5f);
@@ -268,14 +255,6 @@ jobs:
                       lv_obj_set_size(self->right_eye_, (int)self->cur_r_.w, (int)self->cur_r_.h);
                       lv_obj_set_style_radius(self->right_eye_, (int)self->cur_r_.radius, 0);
                       lv_obj_set_style_bg_color(self->right_eye_, lv_color_hex(self->tgt_r_.color_hex), 0);
-                  }
-                  if (self->right_top_lid_) {
-                      lv_obj_set_size(self->right_top_lid_, (int)self->cur_r_.w + 4, (int)self->cur_r_.top_lid_h);
-                      lv_obj_align(self->right_top_lid_, LV_ALIGN_TOP_MID, 0, 0);
-                  }
-                  if (self->right_bot_lid_) {
-                      lv_obj_set_size(self->right_bot_lid_, (int)self->cur_r_.w + 4, (int)self->cur_r_.bot_lid_h);
-                      lv_obj_align(self->right_bot_lid_, LV_ALIGN_BOTTOM_MID, 0, 0);
                   }
               }
 
@@ -366,94 +345,62 @@ jobs:
                   lv_obj_set_style_bg_color(screen, lv_color_black(), 0);
                   lv_obj_remove_flag(screen, LV_OBJ_FLAG_SCROLLABLE);
 
-                  // Ocultar por completo widgets de texto y emojis clasicos de Xiaozhi
-                  if (chat_message_label_) lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
-                  if (status_bar_) lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
-                  if (emoji_box_) lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+                  // Eliminar por completo bordes, lineas divisorias y barras clasicas de Xiaozhi
+                  if (status_bar_) {
+                      lv_obj_add_flag(status_bar_, LV_OBJ_FLAG_HIDDEN);
+                      lv_obj_set_size(status_bar_, 0, 0);
+                      lv_obj_set_style_border_width(status_bar_, 0, 0);
+                      lv_obj_set_style_outline_width(status_bar_, 0, 0);
+                      lv_obj_set_style_pad_all(status_bar_, 0, 0);
+                  }
+                  if (chat_message_label_) {
+                      lv_obj_add_flag(chat_message_label_, LV_OBJ_FLAG_HIDDEN);
+                      lv_obj_set_size(chat_message_label_, 0, 0);
+                  }
+                  if (emoji_box_) {
+                      lv_obj_add_flag(emoji_box_, LV_OBJ_FLAG_HIDDEN);
+                      lv_obj_set_size(emoji_box_, 0, 0);
+                  }
                   if (emoji_image_) lv_obj_add_flag(emoji_image_, LV_OBJ_FLAG_HIDDEN);
                   if (emoji_label_) lv_obj_add_flag(emoji_label_, LV_OBJ_FLAG_HIDDEN);
                   if (container_) {
-                      lv_obj_remove_flag(container_, LV_OBJ_FLAG_CLICKABLE);
-                      lv_obj_remove_flag(container_, LV_OBJ_FLAG_SCROLLABLE);
-                      lv_obj_add_flag(container_, LV_OBJ_FLAG_EVENT_BUBBLE);
                       lv_obj_add_flag(container_, LV_OBJ_FLAG_HIDDEN);
+                      lv_obj_set_size(container_, 0, 0);
+                      lv_obj_set_style_border_width(container_, 0, 0);
+                      lv_obj_set_style_outline_width(container_, 0, 0);
                   }
                   if (content_) {
-                      lv_obj_remove_flag(content_, LV_OBJ_FLAG_CLICKABLE);
-                      lv_obj_remove_flag(content_, LV_OBJ_FLAG_SCROLLABLE);
-                      lv_obj_add_flag(content_, LV_OBJ_FLAG_EVENT_BUBBLE);
                       lv_obj_add_flag(content_, LV_OBJ_FLAG_HIDDEN);
+                      lv_obj_set_size(content_, 0, 0);
+                      lv_obj_set_style_border_width(content_, 0, 0);
+                      lv_obj_set_style_outline_width(content_, 0, 0);
                   }
 
-                  // Ojo Izquierdo Vectorial EMO
+                  // Ojo Izquierdo Vectorial EMO (Limpio, sin parches ni lineas de parpado)
                   left_eye_ = lv_obj_create(screen);
                   lv_obj_remove_flag(left_eye_, LV_OBJ_FLAG_CLICKABLE);
                   lv_obj_remove_flag(left_eye_, LV_OBJ_FLAG_SCROLLABLE);
                   lv_obj_add_flag(left_eye_, LV_OBJ_FLAG_EVENT_BUBBLE);
                   lv_obj_set_style_border_width(left_eye_, 0, 0);
+                  lv_obj_set_style_outline_width(left_eye_, 0, 0);
                   lv_obj_set_style_pad_all(left_eye_, 0, 0);
-                  lv_obj_set_style_clip_corner(left_eye_, true, 0);
                   lv_obj_set_style_bg_color(left_eye_, lv_color_hex(0x00E5FF), 0);
                   lv_obj_set_style_radius(left_eye_, 28, 0);
                   lv_obj_set_size(left_eye_, 62, 78);
                   lv_obj_set_pos(left_eye_, DEFAULT_LX, DEFAULT_EY);
 
-                  left_top_lid_ = lv_obj_create(left_eye_);
-                  lv_obj_remove_flag(left_top_lid_, LV_OBJ_FLAG_CLICKABLE);
-                  lv_obj_remove_flag(left_top_lid_, LV_OBJ_FLAG_SCROLLABLE);
-                  lv_obj_add_flag(left_top_lid_, LV_OBJ_FLAG_EVENT_BUBBLE);
-                  lv_obj_set_style_border_width(left_top_lid_, 0, 0);
-                  lv_obj_set_style_pad_all(left_top_lid_, 0, 0);
-                  lv_obj_set_style_bg_color(left_top_lid_, lv_color_black(), 0);
-                  lv_obj_set_style_radius(left_top_lid_, 0, 0);
-                  lv_obj_set_size(left_top_lid_, 70, 0);
-                  lv_obj_align(left_top_lid_, LV_ALIGN_TOP_MID, 0, 0);
-
-                  left_bot_lid_ = lv_obj_create(left_eye_);
-                  lv_obj_remove_flag(left_bot_lid_, LV_OBJ_FLAG_CLICKABLE);
-                  lv_obj_remove_flag(left_bot_lid_, LV_OBJ_FLAG_SCROLLABLE);
-                  lv_obj_add_flag(left_bot_lid_, LV_OBJ_FLAG_EVENT_BUBBLE);
-                  lv_obj_set_style_border_width(left_bot_lid_, 0, 0);
-                  lv_obj_set_style_pad_all(left_bot_lid_, 0, 0);
-                  lv_obj_set_style_bg_color(left_bot_lid_, lv_color_black(), 0);
-                  lv_obj_set_style_radius(left_bot_lid_, 28, 0);
-                  lv_obj_set_size(left_bot_lid_, 70, 0);
-                  lv_obj_align(left_bot_lid_, LV_ALIGN_BOTTOM_MID, 0, 0);
-
-                  // Ojo Derecho Vectorial EMO
+                  // Ojo Derecho Vectorial EMO (Limpio, sin parches ni lineas de parpado)
                   right_eye_ = lv_obj_create(screen);
                   lv_obj_remove_flag(right_eye_, LV_OBJ_FLAG_CLICKABLE);
                   lv_obj_remove_flag(right_eye_, LV_OBJ_FLAG_SCROLLABLE);
                   lv_obj_add_flag(right_eye_, LV_OBJ_FLAG_EVENT_BUBBLE);
                   lv_obj_set_style_border_width(right_eye_, 0, 0);
+                  lv_obj_set_style_outline_width(right_eye_, 0, 0);
                   lv_obj_set_style_pad_all(right_eye_, 0, 0);
-                  lv_obj_set_style_clip_corner(right_eye_, true, 0);
                   lv_obj_set_style_bg_color(right_eye_, lv_color_hex(0x00E5FF), 0);
                   lv_obj_set_style_radius(right_eye_, 28, 0);
                   lv_obj_set_size(right_eye_, 62, 78);
                   lv_obj_set_pos(right_eye_, DEFAULT_RX, DEFAULT_EY);
-
-                  right_top_lid_ = lv_obj_create(right_eye_);
-                  lv_obj_remove_flag(right_top_lid_, LV_OBJ_FLAG_CLICKABLE);
-                  lv_obj_remove_flag(right_top_lid_, LV_OBJ_FLAG_SCROLLABLE);
-                  lv_obj_add_flag(right_top_lid_, LV_OBJ_FLAG_EVENT_BUBBLE);
-                  lv_obj_set_style_border_width(right_top_lid_, 0, 0);
-                  lv_obj_set_style_pad_all(right_top_lid_, 0, 0);
-                  lv_obj_set_style_bg_color(right_top_lid_, lv_color_black(), 0);
-                  lv_obj_set_style_radius(right_top_lid_, 0, 0);
-                  lv_obj_set_size(right_top_lid_, 70, 0);
-                  lv_obj_align(right_top_lid_, LV_ALIGN_TOP_MID, 0, 0);
-
-                  right_bot_lid_ = lv_obj_create(right_eye_);
-                  lv_obj_remove_flag(right_bot_lid_, LV_OBJ_FLAG_CLICKABLE);
-                  lv_obj_remove_flag(right_bot_lid_, LV_OBJ_FLAG_SCROLLABLE);
-                  lv_obj_add_flag(right_bot_lid_, LV_OBJ_FLAG_EVENT_BUBBLE);
-                  lv_obj_set_style_border_width(right_bot_lid_, 0, 0);
-                  lv_obj_set_style_pad_all(right_bot_lid_, 0, 0);
-                  lv_obj_set_style_bg_color(right_bot_lid_, lv_color_black(), 0);
-                  lv_obj_set_style_radius(right_bot_lid_, 28, 0);
-                  lv_obj_set_size(right_bot_lid_, 70, 0);
-                  lv_obj_align(right_bot_lid_, LV_ALIGN_BOTTOM_MID, 0, 0);
 
                   // Boca Vectorial
                   mouth_ = lv_obj_create(screen);
