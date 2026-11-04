@@ -563,6 +563,11 @@ jobs:
                               face_down_count++; upright_count = 0;
                               if (face_down_count >= 4 && !self->privacy_mode_active_) {
                                   self->privacy_mode_active_ = true;
+                                  auto& app = Application::GetInstance();
+                                  app.Schedule([&app]() {
+                                      app.AbortSpeaking(kAbortReasonNone);
+                                  });
+                                  if (self->display_) self->display_->SetEmotion("sleepy");
                                   if (self->GetBacklight()) self->GetBacklight()->SetBrightness(0);
                               }
                           } else if (az < 0.35f) {
