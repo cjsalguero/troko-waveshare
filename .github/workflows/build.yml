@@ -699,9 +699,9 @@ jobs:
                   ESP_LOGI(TAG, "Wi-Fi optimizado: PS=NONE (rendimiento máximo), Max TX Power=%d (%.2f dBm)", tx_power, tx_power * 0.25f);
               }
 
-              virtual void SetPowerSaveMode(bool enabled) override {
-                  // Bloquear modo de bajo consumo en Wi-Fi para evitar desconexiones constantes
-                  WifiBoard::SetPowerSaveMode(false);
+              virtual void SetPowerSaveLevel(PowerSaveLevel level) override {
+                  // Bloquear modo de bajo consumo en Wi-Fi: forzar siempre PERFORMANCE para evitar desconexiones y jitter de audio
+                  WifiBoard::SetPowerSaveLevel(PowerSaveLevel::PERFORMANCE);
                   esp_wifi_set_ps(WIFI_PS_NONE);
               }
           };
