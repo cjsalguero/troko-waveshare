@@ -116,6 +116,7 @@ jobs:
           #include "assets/lang_config.h"
 
           #include <wifi_station.h>
+          #include <esp_wifi.h>
           #include <esp_log.h>
           #include <driver/i2c_master.h>
           #include <esp_lcd_panel_vendor.h>
@@ -432,23 +433,26 @@ jobs:
                               }
                           }
 
-                          // 2. Modo Privacidad (Boca abajo -> apagar pantalla)
-                          if (az < -0.75f) {
+                          // 2. Modo Privacidad (Boca abajo / pantalla contra la mesa -> apagar pantalla)
+                          // Al estar la pantalla y el PCB juntos con el sensor QMI8658 en el reverso,
+                          // cuando Troko está boca abajo (pantalla contra la mesa), az es positivo (> 0.70f).
+                          // Cuando está en posición normal (boca arriba o de pie), az es negativo o cercano a 0 (az < 0.30f).
+                          if (az > 0.70f) {
                               face_down_count++;
                               upright_count = 0;
                               if (face_down_count >= 4 && !self->privacy_mode_active_) {
                                   self->privacy_mode_active_ = true;
-                                  ESP_LOGI(TAG, "Modo Privacidad Activado (Boca Abajo)");
+                                  ESP_LOGI(TAG, "Modo Privacidad Activado (Boca Abajo: az=%.2f)", az);
                                   if (self->GetBacklight()) {
                                       self->GetBacklight()->SetBrightness(0);
                                   }
                               }
-                          } else if (az > 0.35f) {
+                          } else if (az < 0.30f) {
                               upright_count++;
                               face_down_count = 0;
                               if (upright_count >= 3 && self->privacy_mode_active_) {
                                   self->privacy_mode_active_ = false;
-                                  ESP_LOGI(TAG, "Modo Privacidad Desactivado (De pie)");
+                                  ESP_LOGI(TAG, "Modo Privacidad Desactivado (Posición normal: az=%.2f)", az);
                                   if (self->GetBacklight()) {
                                       self->GetBacklight()->RestoreBrightness();
                                   }
@@ -678,6 +682,27 @@ jobs:
                   charging = (vbat_mv > 4250);
                   discharging = !charging;
                   return true;
+              }
+
+              virtual void StartNetwork() override {
+                  WifiBoard::StartNetwork();
+
+                  // Optimización agresiva de Wi-Fi:
+                  // 1. Desactivar modo de ahorro de energía (modem sleep) para eliminar jitter, latencia y cortes de audio en tiempo real
+                  esp_wifi_set_ps(WIFI_PS_NONE);
+
+                  // 2. Elevar potencia de transmisión RF al máximo físico de 21 dBm (84 en pasos de 0.25 dBm)
+                  esp_wifi_set_max_tx_power(84);
+
+                  int8_t tx_power = 0;
+                  esp_wifi_get_max_tx_power(&tx_power);
+                  ESP_LOGI(TAG, "Wi-Fi optimizado: PS=NONE (rendimiento máximo), Max TX Power=%d (%.2f dBm)", tx_power, tx_power * 0.25f);
+              }
+
+              virtual void SetPowerSaveMode(bool enabled) override {
+                  // Bloquear modo de bajo consumo en Wi-Fi para evitar desconexiones constantes
+                  WifiBoard::SetPowerSaveMode(false);
+                  esp_wifi_set_ps(WIFI_PS_NONE);
               }
           };
 
